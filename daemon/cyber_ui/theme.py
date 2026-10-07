@@ -38,9 +38,18 @@ RED_DIM = _hex("521818")
 # ---- Layout (identical to the chatbot UI) --------------------------------
 WIDTH = 240
 HEIGHT = 280
-STATUS_H = 23             # status bar rows 0..21 plus the divider row 22
-DIVIDER_Y = 22
-PANE_Y = 23               # first row under the status bar
+# Status bar safe area. The Whisplay LCD has rounded corners (radius about
+# 40 px); at the top of the screen the visible area starts well inside x=0.
+# Status content stays inside STATUS_SAFE_LEFT..STATUS_SAFE_RIGHT and is
+# centred a little lower than the chatbot's (y=11) so nothing reaches the
+# curve, even allowing for a 44 px radius (checked by tests/test_cyber_menu.py).
+SCREEN_CORNER_RADIUS = 40
+STATUS_SAFE_LEFT = 24
+STATUS_SAFE_RIGHT = 216   # = WIDTH - 24, symmetric with the left edge
+STATUS_CENTER_Y = 13
+STATUS_H = 27             # status bar rows 0..25 plus the divider row 26
+DIVIDER_Y = 26
+PANE_Y = 27               # first row under the status bar
 CHROME_LEFT = 14
 CHROME_RIGHT = 226
 TEXT_LEFT = 12
@@ -50,7 +59,7 @@ CURSOR_W = 8
 CURSOR_H = 15
 STAGE_H = 104             # hero frame: 80 px visual + 24 px caption row
 STAGE_VISUAL_H = 80
-BODY_TOP_STAGE = 127
+BODY_TOP_STAGE = PANE_Y + STAGE_H
 BODY_PAD = 6
-STRIP_H = 26              # console strip height (rows 23..48)
+STRIP_H = 26              # console strip height under the status bar
 APPROVAL_H = 38           # bottom action bar (chatbot approval bar)

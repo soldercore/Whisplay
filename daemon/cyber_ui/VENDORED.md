@@ -7,9 +7,9 @@ Copied, not imported, so the daemon never depends on the chatbot at runtime.
 | File here | Origin | Changes |
 |---|---|---|
 | `fonts.py` | `whisplay_ui/fonts.py` | `FONT_DIR` points at `cyber_ui/fonts/`; docstring |
-| `theme.py` | `whisplay_ui/theme.py` | palette and layout tokens only (no timing/flags) |
+| `theme.py` | `whisplay_ui/theme.py` | palette and layout tokens only (no timing/flags); adds the status-bar safe-area constants |
 | `draw_util.py` | `whisplay_ui/draw_util.py` | subset: mix, clamp01, cap_height, draw_text, fit_text, corner_brackets; `dotted` from `panes.py` |
-| `statusbar.py` | `whisplay_ui/statusbar.py` | battery + Wi-Fi + badge only; clock optional |
+| `statusbar.py` | `whisplay_ui/statusbar.py` | battery + Wi-Fi + badge only; clock optional; content inset to the rounded-corner safe area (`theme.STATUS_SAFE_*`, 27 px bar) |
 | `fonts/*.ttf`, `fonts/OFL-*.txt` | `python/fonts/` | unchanged (SIL Open Font License) |
 
 Launcher-specific code (not vendored): `menu_renderer.py` (screens),

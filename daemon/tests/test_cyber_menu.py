@@ -15,7 +15,7 @@ if DAEMON_DIR not in sys.path:
     sys.path.insert(0, DAEMON_DIR)
 
 try:
-    import numpy  # noqa: F401
+    import numpy as np
     from PIL import Image, ImageFont  # noqa: F401
 
     HAVE_IMAGING = hasattr(ImageFont, "truetype")
@@ -68,6 +68,26 @@ class CyberMenuRenderTests(unittest.TestCase):
                 self.assertEqual(renderer.mode, "cyber")
                 self.assertEqual(board.draws, [(0, 0, 240, 280)])
                 self.assertTrue(board.fb.any())
+
+    def test_status_bar_stays_clear_of_rounded_corners(self):
+        """Nothing in the status bar may fall inside the rounded top corners.
+        Checked against a 44 px radius (4 px more than the panel's ~40 px).
+        The full-width divider hairline is the only exception."""
+        from cyber_ui import theme
+
+        radius = theme.SCREEN_CORNER_RADIUS + 4
+        ys, xs = np.mgrid[0:radius, 0:radius]
+        clipped = (radius - xs) ** 2 + (radius - ys) ** 2 > radius ** 2
+        for name, action in self.preview.scenarios():
+            with self.subTest(screen=name):
+                board = self.board()
+                action(self.fallback(board))
+                fb = board.fb
+                for corner in (fb[:radius, :radius], fb[:radius, ::-1][:, :radius]):
+                    lit = corner.any(axis=2) & clipped
+                    for y, x in zip(*np.nonzero(lit)):
+                        is_divider = y == theme.DIVIDER_Y and tuple(corner[y, x]) == theme.LINE
+                        self.assertTrue(is_divider, f"pixel in rounded corner at row {y}, col {x}")
 
     def test_cyber_frames_use_the_shared_palette(self):
         from cyber_ui import theme

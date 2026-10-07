@@ -1,7 +1,8 @@
 """Status bar: state badge plus battery / Wi-Fi indicators.
 
 VENDORED (subset) from soldercore/whisplay-ai-chatbot @ 2dd608b,
-python/whisplay_ui/statusbar.py. Same geometry and colours; the launcher only
+python/whisplay_ui/statusbar.py. Same drawing and colours, but the content is
+inset to the rounded-corner safe area (theme.STATUS_SAFE_*). The launcher only
 has battery and Wi-Fi data, so VPN/RAG/image tags and plugin icons are left
 out. The clock is optional because the launcher only redraws on events and a
 stale clock would be misleading.
@@ -11,7 +12,7 @@ from PIL import Image, ImageDraw
 from . import theme
 from .draw_util import draw_text, fit_text
 
-CENTER_Y = 11
+CENTER_Y = theme.STATUS_CENTER_Y
 GAP = 6
 
 
@@ -36,14 +37,14 @@ class StatusBar:
         draw.line([(0, theme.DIVIDER_Y), (theme.WIDTH - 1, theme.DIVIDER_Y)], fill=theme.LINE)
 
         # ---- left: state badge
-        x = theme.CHROME_LEFT
+        x = theme.STATUS_SAFE_LEFT
         draw.rectangle([x, CENTER_Y - 3, x + 5, CENTER_Y + 2], fill=color)
         label = fit_text(fonts.pixel8, label, 86)
         left_end = draw_text(draw, image, fonts.pixel8, x + 10, CENTER_Y, label, color)
         draw.line([(x, theme.DIVIDER_Y), (int(left_end), theme.DIVIDER_Y)], fill=color)
 
         # ---- right cluster, laid out right to left
-        right = theme.CHROME_RIGHT
+        right = theme.STATUS_SAFE_RIGHT
         if isinstance(battery_level, int) and not isinstance(battery_level, bool):
             right = self._battery(draw, image, right, battery_level)
         if wifi_level:

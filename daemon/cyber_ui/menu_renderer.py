@@ -5,7 +5,7 @@ points (render, render_internal_app) with the same arguments. It only draws;
 app discovery, navigation, button handling and focus stay in the daemon.
 
 Layout mirrors the chatbot's terminal UI (soldercore/whisplay-ai-chatbot,
-python/whisplay_ui): 23 px status bar, a bracketed 80 px "stage" with a 24 px
+python/whisplay_ui): a 27 px status bar inset from the rounded corners, a bracketed 80 px "stage" with a 24 px
 caption row, a 20 px-line body, and the approval-bar style action chips at the
 bottom. Frames are static: the only motion is the launch progress dots, which
 the daemon already re-renders while an app is starting.
