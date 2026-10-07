@@ -94,6 +94,15 @@ Foreground apps may register `exit_gesture` as `quad_click`, `long_press`, or
 `none`. With `none`, the daemon does not reserve a Whisplay button gesture for
 exit; the app must provide another Home action, such as the PiSugar button.
 
+The desktop and built-in pages use the cyber-terminal look shared with the Whisplay AI Chatbot (`daemon/cyber_ui/`). To use the original desktop instead, set `WHISPLAY_MENU_UI=classic` for the service and restart it:
+
+```bash
+sudo systemctl edit whisplay-daemon.service   # add: [Service] Environment=WHISPLAY_MENU_UI=classic
+sudo systemctl restart whisplay-daemon.service
+```
+
+If the cyber-terminal menu fails to start or render, the daemon switches to the original desktop automatically for the rest of that run. Preview it off-device with `cd daemon && python3 -m cyber_ui.preview`.
+
 To inspect daemon logs:
 
 ```shell

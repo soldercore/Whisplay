@@ -22,6 +22,11 @@ from daemon_events import EventBroadcaster
 from daemon_models import AppRecord
 from daemon_pisugar import PISUGAR3_POWER_BUTTON_POLL_INTERVAL_SEC, PiSugarManager
 from daemon_renderer import DesktopRenderer
+try:
+    from cyber_ui import FallbackDesktopRenderer
+except Exception as _menu_ui_error:  # the daemon must start even if the cyber menu is broken
+    print(f"[WhisplayDaemon] Cyber menu UI unavailable, using classic: {_menu_ui_error}")
+    FallbackDesktopRenderer = None
 from daemon_shared import (
     BUTTON_LONG_PRESS_SEC,
     DEFAULT_APP_LOG_PATH,
@@ -66,7 +71,7 @@ class WhisplayDaemon:
         self.state_lock = threading.RLock()
         self.event_broadcaster = EventBroadcaster()
         self.board = WhisplayBoard()
-        self.desktop = DesktopRenderer(self.board, SCRIPT_DIR)
+        self.desktop = (FallbackDesktopRenderer or DesktopRenderer)(self.board, SCRIPT_DIR)
         self.pisugar = PiSugarManager()
         self.status_poller = StatusPoller(self.pisugar)
         self.internal_apps = InternalAppManager(self._lock_screen)
