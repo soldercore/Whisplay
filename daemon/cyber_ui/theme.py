@@ -38,18 +38,25 @@ RED_DIM = _hex("521818")
 # ---- Layout (identical to the chatbot UI) --------------------------------
 WIDTH = 240
 HEIGHT = 280
-# Status bar safe area. The Whisplay LCD has rounded corners (radius about
-# 40 px); at the top of the screen the visible area starts well inside x=0.
-# Status content stays inside STATUS_SAFE_LEFT..STATUS_SAFE_RIGHT and is
-# centred a little lower than the chatbot's (y=11) so nothing reaches the
-# curve, even allowing for a 44 px radius (checked by tests/test_cyber_menu.py).
+
+# ---- Safe area: rounded LCD corners ---------------------------------------
+# Identical in soldercore/Whisplay daemon/cyber_ui/theme.py and
+# soldercore/whisplay-ai-chatbot python/whisplay_ui/theme.py; keep in sync.
+# The Whisplay panel has rounded corners (radius about 40 px). Status-bar
+# content stays between STATUS_SAFE_LEFT and STATUS_SAFE_RIGHT on the
+# STATUS_CENTER_Y line, and content that runs to the side margins ends above
+# CONTENT_SAFE_BOTTOM, so nothing reaches the curve even for a 44 px radius
+# (SAFE_CHECK_RADIUS, enforced by the tests in both repos).
 SCREEN_CORNER_RADIUS = 40
-STATUS_SAFE_LEFT = 24
-STATUS_SAFE_RIGHT = 216   # = WIDTH - 24, symmetric with the left edge
-STATUS_CENTER_Y = 13
+SAFE_CHECK_RADIUS = 44
+STATUS_SAFE_LEFT = 24     # first usable column
+STATUS_SAFE_RIGHT = 216   # last usable column (inclusive), = WIDTH - 24
+STATUS_CENTER_Y = 13      # centre line of badge, labels, battery and Wi-Fi
 STATUS_H = 27             # status bar rows 0..25 plus the divider row 26
 DIVIDER_Y = 26
-PANE_Y = 27               # first row under the status bar
+PANE_Y = 27               # content top: first row under the status bar
+CONTENT_SAFE_BOTTOM = 264 # = HEIGHT - 16
+
 CHROME_LEFT = 14
 CHROME_RIGHT = 226
 TEXT_LEFT = 12
