@@ -2,6 +2,8 @@
 
 Reference: `cyber-terminal-menu` at `53a9d6e237d8612b15374d0ec74191d52ea9495f`, based on v3.2.3. Target: official v3.2.7 at `736975188ebbe146d319e450aad19c218a310611`. The published stable release, annotated tag object and verification time are recorded in `../upstream-integration.json`.
 
+Actual test results and unverified builds/hardware are recorded in [VALIDATION.md](VALIDATION.md).
+
 This isolated development branch preserves the three custom launcher commits, font licences/vendoring provenance, palette/safe area, desktop/internal screens and permanent classic fallback. It includes the complete official v3.2.7 history: autostart, Joy input/Wi-Fi keyboard, platform/audio work, MP4 cleanup and image overlay fix. No driver, service or production image has been installed.
 
 ## Renderer conflict resolution
