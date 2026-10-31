@@ -14,11 +14,17 @@ from daemon_renderer import DesktopRenderer
 
 
 class FallbackDesktopRenderer:
-    def __init__(self, board, script_dir: str, cyber_factory=None):
+    def __init__(self, board, script_dir: str, cyber_factory=None, *, joy_mode=False):
         from . import menu_ui_mode
 
-        self.classic = DesktopRenderer(board, script_dir)
+        self.classic = DesktopRenderer(board, script_dir, joy_mode=joy_mode)
         self.cyber = None
+        # The cyber layout predates Joy's navigation legends and screen keyboard.
+        # Keep the complete upstream renderer for that model rather than hiding
+        # controls or claiming the custom layout supports them.
+        if joy_mode:
+            print("[WhisplayDaemon] Menu UI: classic for Whisplay Joy controls")
+            return
         if menu_ui_mode() == "classic":
             print("[WhisplayDaemon] Menu UI: classic (WHISPLAY_MENU_UI=classic)")
             return
