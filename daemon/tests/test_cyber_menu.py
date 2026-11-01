@@ -127,6 +127,26 @@ class CyberMenuRenderTests(unittest.TestCase):
         self.assertEqual(menu_ui_mode({"WHISPLAY_MENU_UI": "cyber"}), "cyber")
         self.assertEqual(menu_ui_mode({"WHISPLAY_MENU_UI": " Classic "}), "classic")
 
+    def test_standard_model_keeps_cyber_with_new_renderer_keyword(self):
+        renderer = self.fallback(self.board(), joy_mode=False)
+        self.assertEqual(renderer.mode, "cyber")
+        self.assertFalse(renderer.classic.joy_mode)
+
+    def test_joy_retains_upstream_controls_without_constructing_cyber(self):
+        from daemon_renderer import DesktopRenderer
+
+        board = self.board()
+        factory = mock.Mock(side_effect=AssertionError("unsupported Joy cyber layout"))
+        renderer = self.fallback(board, cyber_factory=factory, joy_mode=True)
+        self.assertEqual(renderer.mode, "classic")
+        self.assertTrue(renderer.classic.joy_mode)
+        factory.assert_not_called()
+        apps = self.preview.default_apps()
+        renderer.render(apps, 1, None, None, 3, 80)
+        expected = self.board()
+        DesktopRenderer(expected, DAEMON_DIR, joy_mode=True).render(apps, 1, None, None, 3, 80)
+        self.assertTrue((board.fb == expected.fb).all())
+
     def test_init_failure_falls_back_to_classic(self):
         def broken(*_args, **_kwargs):
             raise RuntimeError("injected init failure")
@@ -213,6 +233,8 @@ class DaemonIntegrationTests(unittest.TestCase):
         board.set_rgb = lambda r, g, b: board.rgb.append((r, g, b))
         daemon = WhisplayDaemon.__new__(WhisplayDaemon)
         daemon.state_lock = threading.RLock()
+        daemon.model = "whisplay"
+        daemon.joy_mode = False
         daemon.board = board
         daemon.desktop = FallbackDesktopRenderer(board, DAEMON_DIR)
         daemon.apps = {app.app_id: app for app in preview.default_apps()}
@@ -221,6 +243,7 @@ class DaemonIntegrationTests(unittest.TestCase):
         daemon.pending_launch_app_id = None
         daemon._screen_locked = False
         daemon._button_press_started_at = 0.0
+        daemon._keyboard_hold_cancel_fired = False
         daemon._recent_release_times = []
         daemon.last_frame = None
         daemon.status_poller = SimpleNamespace(wifi_signal_level=3, battery_level=80)
@@ -232,6 +255,33 @@ class DaemonIntegrationTests(unittest.TestCase):
         from cyber_ui.fallback import FallbackDesktopRenderer
 
         self.assertIs(whisplay_daemon.FallbackDesktopRenderer, FallbackDesktopRenderer)
+
+    def test_real_daemon_constructor_preserves_model_and_renderer_contract(self):
+        import whisplay_daemon as module
+        from cyber_ui import preview
+
+        for model, expected in (("whisplay", "cyber"), ("whisplay-joy", "classic")):
+            with self.subTest(model=model), tempfile.TemporaryDirectory() as root:
+                board = preview.FakeBoard()
+                for name in ("on_button_press", "on_button_release",
+                             "on_joystick_press", "on_joystick_release"):
+                    setattr(board, name, mock.Mock())
+                with mock.patch.object(module, "WhisplayBoard", return_value=board) as make_board, \
+                     mock.patch.object(module, "PiSugarManager"), \
+                     mock.patch.object(module, "StatusPoller"), \
+                     mock.patch.object(module, "InternalAppManager"), \
+                     mock.patch.object(module, "ExternalKeyboardReader"), \
+                     mock.patch.object(module.WhisplayDaemon, "_load_apps"), \
+                     mock.patch.object(module.WhisplayDaemon, "_register_internal_apps"):
+                    daemon = module.WhisplayDaemon(
+                        os.path.join(root, "daemon.sock"), root,
+                        os.path.join(root, "settings.json"), model=model,
+                        autostart_app_id="whisplay-ai-chatbot",
+                    )
+                make_board.assert_called_once_with(enable_joystick=model == "whisplay-joy")
+                self.assertEqual(daemon.desktop.mode, expected)
+                self.assertEqual(daemon.autostart_app_id, "whisplay-ai-chatbot")
+                self.assertEqual(board.on_joystick_press.call_count, int(model == "whisplay-joy"))
 
     def test_daemon_starts_classic_when_cyber_ui_cannot_import(self):
         import subprocess

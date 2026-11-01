@@ -9,6 +9,7 @@ This project provides comprehensive driver support for the **PiSugar Whisplay Ha
 **Supported Platforms:**
 - Raspberry Pi (all models with 40-pin header)
 - [Orange Pi Zero 2W](http://www.orangepi.org/html/hardWare/computerAndMicrocontrollers/details/Orange-Pi-Zero-2W.html) (H618; official Debian Bookworm 1.0.2 / Linux 6.1.31)
+- [MangoPi MQ Quad](https://linux-sunxi.org/MangoPi_MQ-Quad) (Allwinner H616; tested on Orange Pi OS 3.0.8 / Linux `5.16.17-sun50iw9` with ES8389 and V1 WM8960)
 - [Orange Pi Zero 3W](http://www.orangepi.org/html/hardWare/computerAndMicrocontrollers/details/Orange-Pi-Zero-3W.html) (Allwinner A733; official Debian Bookworm 1.0.0 / Linux 6.6.98)
 - [Radxa ZERO 3W](https://radxa.com/products/zeros/zero3w/) (RK3566)
 - [Radxa Cubie A7Z](https://radxa.com/products/cubie/a7z/) (Allwinner A733)
@@ -36,6 +37,18 @@ sudo reboot
 
 When Raspberry Pi boots with a programmed PiSugar Whisplay HAT EEPROM, the installer leaves `whisplay-soundcard` overlay loading to the EEPROM and removes any legacy manual `dtoverlay=whisplay-soundcard` config.
 
+#### MangoPi MQ Quad compatibility
+
+MangoPi MQ Quad support has been tested on the Orange Pi OS 3.0.8 Bullseye image with vendor kernel `5.16.17-sun50iw9`, using both ES8389 and V1 WM8960 Whisplay HATs. This image may identify the board as Orange Pi Zero2; use `sudo bash script/install_mangopi_mq_quad.sh` to explicitly select the MangoPi installer. Reboot after installation to load the module and overlay; do not hot-unbind the codec.
+
+- LCD, backlight, RGB LED, buttons, and the daemon desktop/app switching are supported. Jump Game and Flappy Bird were tested with sound enabled through repeated launch/exit cycles.
+- Real speaker playback and both microphone channels were verified, including simultaneous playback/capture, repeated device opens, and recovery after reboot. An external USB microphone independently confirmed speaker output; validation is not limited to DMA or digital loopback.
+- Audio uses the `whisplaysound` ALSA card at 48 kHz with two 32-bit I2S slots. S16_LE, S24_LE, and S32_LE SoC loopbacks passed channel mapping and tone-frequency checks. The HAT speaker is mono; stereo mapping is checked on the digital path.
+- Keep `libasound2-plugins` installed (included by the MangoPi installer) for game audio resampling. Install the optional daemon separately with `sudo bash daemon/install_whisplay_daemon_service.sh`.
+- V1 WM8960 requires `snd-soc-wm8960`, which this vendor kernel does not include. The installer builds it when missing; matching kernel headers must be available at `/lib/modules/$(uname -r)/build`. The machine driver uses the V1 HAT's 24 MHz oscillator with WM8960's automatic PLL configuration, rather than treating 24 MHz as a direct 48 kHz audio SYSCLK.
+
+These results apply to the tested HAT/vendor-kernel combinations. Other images and kernel versions have not been validated in this MangoPi regression run and may require additional adaptation. WM8960 `aplay` wall-clock time includes PLL lock/startup overhead; the regression tool separately measures the actual test-tone duration in the capture. `codec-loopback` is ES8389-only; use `soc-loopback` and `microphone` for WM8960.
+
 > ⚠️ **Important Hardware Warning (Orange Pi Zero 3W and Radxa Cubie A7Z)**
 > Orange Pi Zero 3W and Radxa Cubie A7Z **must be used with Whisplay V2 hardware**.
 > Do not connect Whisplay V1: its button circuit carries 5 V and pressing the button can immediately cut power to the board.
@@ -55,7 +68,7 @@ bash run_test.sh
 The daemon now also ships with four built-in system entries:
 
 - `Bluetooth`: opens an internal page that scans nearby Bluetooth devices and lets you bind or unbind the selected device
-- `WiFi`: opens an internal page that scans nearby Wi-Fi networks and lets you connect; protected networks enter a single-button password page, and actual password input depends on an attached external keyboard
+- `WiFi`: opens an internal page that scans nearby Wi-Fi networks and lets you connect; Whisplay Joy provides an on-screen keyboard for protected-network passwords, while the original model supports an attached external keyboard
 - `Volume`: opens an internal page for speaker volume adjustment
 - `Power`: opens the Power Menu to lock the display, reboot, or shut down the device. Lock mode turns off the backlight and uses a blue breathing LED; press the Whisplay button to wake
 
@@ -84,15 +97,30 @@ Example daemon settings:
 ```json
 {
   "apps_dir": "~/.whisplay-daemon/app",
-  "pisugar_home_button": "single"
+  "model": "whisplay",
+  "pisugar_home_button": "single",
+  "autostart_app_id": ""
 }
 ```
+
+Set `autostart_app_id` to the `app_id` of a registered entry in
+`~/.whisplay-daemon/app/` to launch it whenever the daemon starts. Leave it
+empty or omit it to keep showing the daemon desktop after boot.
+
+Set `model` to `whisplay-joy` for the Whisplay Joy board. Its five-way switch
+uses S1/up (physical pin 32, BCM12), S2/right (pin 33, BCM13), S4/down
+(pin 31, BCM6), S3/left (pin 29, BCM5), and CENTER (pin 37, BCM26). Up/down
+scroll daemon menus, right or CENTER confirms, and left returns. The original Whisplay
+button also confirms with a normal click. Joy input is ignored while an external
+app owns the foreground and resumes when the daemon regains focus.
 
 `pisugar_home_button` controls which PiSugar button gesture returns from the foreground app back to daemon home. Supported values are `single`, `double`, `long`, and `none`. The default is `single`. When PiSugar 3 is detected on I2C bus 1 at `0x57`, the daemon reads the power-button state directly from register `0x02` and uses a power-button single click to return home, leaving the PiSugar custom-button single-click event free. Setting this option to `none` still disables the integration.
 
 Foreground apps may register `exit_gesture` as `quad_click`, `long_press`, or
 `none`. With `none`, the daemon does not reserve a Whisplay button gesture for
 exit; the app must provide another Home action, such as the PiSugar button.
+
+Custom v3.2.7 integration details, preserved features, model-specific fallback and off-device/physical tests are documented in [docs/CUSTOM_INTEGRATION.md](docs/CUSTOM_INTEGRATION.md). Standard Whisplay keeps the cyber UI; Joy uses the upstream classic renderer for its navigation and screen keyboard.
 
 The desktop and built-in pages use the cyber-terminal look shared with the Whisplay AI Chatbot (`daemon/cyber_ui/`). To use the original desktop instead, set `WHISPLAY_MENU_UI=classic` for the service and restart it:
 
@@ -140,10 +168,10 @@ The repo root is organized by responsibility:
   * **Function**: Optional local hardware daemon that owns the LCD, backlight, RGB LED, button, and app lifecycle, and exposes a local Unix socket API for app registration, app switching, and shared framebuffer handoff.
   * **Protocol**: line-delimited JSON with `version: 1`
   * **Default socket path**: `/tmp/whisplay-daemon.sock`
-  * **Commands**: `health.ping`, `app.register`, `app.list`, `app.launch`, `app.focus.acquire`, `app.focus.release`, `app.exit.request`, `framebuffer.acquire`, `backlight.set`, `led.set`, `led.fade`, `button.get_state`, `events.subscribe`
+  * **Commands**: `health.ping`, `app.register`, `app.list`, `app.launch`, `app.autostart.set`, `app.focus.acquire`, `app.focus.release`, `app.exit.request`, `framebuffer.acquire`, `backlight.set`, `led.set`, `led.fade`, `button.get_state`, `events.subscribe`
   * **Desktop behavior**: single click cycles registered apps, long press launches/foregrounds the selected app, and 4 rapid clicks request exit from the foreground app unless it registered `exit_gesture: "none"`
   * **Built-in system pages**: includes `Bluetooth`, `WiFi`, `Volume`, and `Power` entries rendered by the daemon itself, without spawning an external app process
-  * **Wi-Fi password input**: selecting a protected network enters a password input page; password entry depends on an attached external keyboard (arrow keys / Enter / Backspace / ESC)
+  * **Wi-Fi password input**: on Whisplay Joy, selecting a protected network opens a miniature QWERTY keyboard. S1/S2/S4/S3 move up/right/down/left, CENTER or a short press of the original Whisplay button selects the highlighted key, `ABC` switches letter/symbol case, `DEL` deletes, `SPACE` inserts a space, and `JOIN` connects. Holding the original Whisplay button leaves the keyboard as soon as the long-press threshold is reached and flashes the LED red; release is not required. The original Whisplay model continues to support an attached external keyboard (Enter / Backspace / ESC).
   * **PiSugar home integration**: the daemon first detects PiSugar 3 over I2C; when found, a power-button single click returns home and the PiSugar custom-button single-click event remains free. Other models continue to use `pisugar-server` and the `single`, `double`, or `long` gesture configured by `pisugar_home_button` in `~/.whisplay-daemon/settings.json`; set it to `none` to disable the integration
   * **Install as service**:
     ```shell
@@ -152,7 +180,7 @@ The repo root is organized by responsibility:
   * **Install result**: the installer writes `~/.whisplay-daemon/settings.json` and seeds the default example app JSON files into `~/.whisplay-daemon/app/`
 #### 2. Unified Audio Driver
 
-  * **Source**: Raspberry Pi, Orange Pi Zero 2W/3W, Radxa ZERO 3W, and Radxa Cubie A7Z use the bundled unified Whisplay sound card driver in `audio/whisplay-soundcard/`, compatible with WM8960 and ES8389 codec variants.
+  * **Source**: Raspberry Pi, Orange Pi Zero 2W/3W, MangoPi MQ Quad, Radxa ZERO 3W, and Radxa Cubie A7Z use the bundled unified Whisplay sound card driver in `audio/whisplay-soundcard/`, compatible with WM8960 and ES8389 codec variants.
 
   * **Legacy driver**: Older driver support is kept on the `support/wm8960` branch. If you need the legacy driver, check out that branch before installing.
 
@@ -161,6 +189,7 @@ The repo root is organized by responsibility:
     - **Raspberry Pi**: Run `script/install_raspberry_pi.sh`
     - **Orange Pi Zero 2W**: Run `script/install_orangepi_zero2w.sh`
     - **Orange Pi Zero 3W**: Run `script/install_orangepi_zero3w.sh`
+    - **MangoPi MQ Quad**: Run `script/install_mangopi_mq_quad.sh`
     - **Radxa ZERO 3W**: Run `script/install_radxa_zero3w.sh`
     - **Radxa Cubie A7Z**: Run `script/install_radxa_cubie_a7z.sh`
 
@@ -172,6 +201,8 @@ The repo root is organized by responsibility:
     sudo bash script/install_orangepi_zero2w.sh
     # For Orange Pi Zero 3W:
     sudo bash script/install_orangepi_zero3w.sh
+    # For MangoPi MQ Quad:
+    sudo bash script/install_mangopi_mq_quad.sh
     # For Radxa ZERO 3W:
     sudo bash script/install_radxa_zero3w.sh
     # For Radxa Cubie A7Z:
@@ -181,10 +212,12 @@ The repo root is organized by responsibility:
 #### 3. Bundled Unified Sound Card Driver
 
   * `audio/whisplay-soundcard/` - unified driver source, install scripts, ALSA config, and platform DTS overlays. The platform installers build and install it directly from this repository.
+  * **MangoPi MQ Quad / Linux 5.16**: the MQ overlay enables vendor-specific DMA-width/divider corrections and per-stream APBIF reset/FIFO initialization to prevent channel swaps after app switching. ES8389 is initialized after I2S clocks are active, retaining the HAT's onboard MCLK oscillator. These vendor workarounds are scoped to MangoPi and do not change other platforms' clock behavior. Run `sudo python3 audio/whisplay-soundcard/scripts/test-mangopi-audio.py microphone` on the board to save and analyze a real speaker-to-microphone recording. `soc-loopback` and `codec-loopback` test the digital paths; `--format S24_LE` / `--format S32_LE` exercise wider PCM containers. Tests temporarily stop and then restore the daemon, wait for daemon readiness, and restore digital loopback bits. The screen may be briefly blank while the daemon restarts.
 
 #### 4. Device Tree Overlays
 
   * `audio/whisplay-soundcard/src/dts/whisplay-soundcard-orangepi-zero2w.dts` - unified H618 overlay using I2C1 on pins 3/5 and AHUB/I2S0 on pins 12/35/38/40. The installer also enables the official `pi-i2c1` and `spi1-cs0-spidev` overlays (SPI1 CS0 on header pins 19/21/23/24) and adds the Whisplay user overlay to `/boot/orangepiEnv.txt`.
+  * `audio/whisplay-soundcard/src/dts/whisplay-soundcard-mangopi-mq-quad.dts` - unified H616 overlay enabling I2C1 and AHUB/I2S0 for audio plus SPI1 CS0 for the LCD on the 40-pin header. The installer adds it to `user_overlays` in `/boot/orangepiEnv.txt`.
   * `audio/whisplay-soundcard/src/dts/whisplay-soundcard-orangepi-zero3w.dts` - unified A733 overlay using TWI0 on pins 3/5 and I2S0 on pins 12/35/38/40. The installer enables SPI3 CS0 for the LCD. I2S0 MCLK/PB4 is intentionally not routed because header pin 7 is reserved for LCD reset.
   * **Orange Pi OS 1.0.2 headers**: the vendor image does not publish an installable headers package. On exactly `6.1.31-sun50iw9`, the installer downloads a pinned, checksum-verified headers archive so it can build the unified module. Other Orange Pi kernel versions must provide matching headers in `/lib/modules/$(uname -r)/build`.
   * **Orange Pi Zero 3W headers**: on the official `6.6.98-sun60iw2` image, the installer downloads a pinned, checksum-verified A733 Linux 6.6.98 headers package and adjusts its kernel release for the vendor kernel before building the modules.

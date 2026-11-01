@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "custom_reference": {
+    "branch": "cyber-terminal-menu",
+    "commit": "53a9d6e237d8612b15374d0ec74191d52ea9495f"
+  },
+  "upstream": {
+    "repository": "PiSugar/Whisplay",
+    "tag": "v3.2.7",
+    "annotated_tag_objects": [
+      "b24618d805e16b1f6554095185fd20c221673cca"
+    ],
+    "commit": "736975188ebbe146d319e450aad19c218a310611",
+    "release_url": "https://github.com/PiSugar/Whisplay/releases/tag/v3.2.7",
+    "published_at": "2026-10-30T14:35:52Z",
+    "verified_at": "2026-10-31T19:24:06.853009+00:00",
+    "draft": false,
+    "prerelease": false
+  },
+  "production_installation": "not accessed; installed revision and hardware behavior unverified",
+  "companion": {
+    "repository": "soldercore/whisplay-ai-chatbot",
+    "development_branch": "integrate/chatbot-v2.1.9"
+  }
+}
