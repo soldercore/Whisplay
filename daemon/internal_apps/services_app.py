@@ -57,9 +57,21 @@ class ServicesApp(MenuApp):
                 'Starting' if state.get('starting') else 'Running' if state.get('running') else
                 'Failed' if state.get('failed') else 'Stopped')
 
+    def apply_start(self, key):
+        if key not in UNITS or key == 'daemon':
+            raise ValueError('Service action not allowed')
+        control(self._run_command, 'service', 'start', key)
+        self.refresh()
+        if self.statuses.get(key) != 'Running':
+            raise RuntimeError('Service start was not confirmed')
+        self.note(UNITS[key][0] + ' running; backend readiness not tested')
+
     def change(self, key, action):
         if key not in UNITS or key == 'daemon' or action not in ('start', 'restart'):
             raise ValueError('Service action not allowed')
+        if action == 'start':
+            self.perform(lambda: self.apply_start(key))
+            return
         def work():
             self.begin_maintenance()
             try:
@@ -73,7 +85,10 @@ class ServicesApp(MenuApp):
         self.perform(work)
 
     def ask_service(self, key, action):
-        detail = ['May interrupt SSH access.', 'Start SSH again in this menu.'] if key == 'ssh' else [
+        if action == 'start':
+            self.change(key, action)
+            return
+        detail = ['Blocked during active SSH.', 'Start SSH again in this menu.'] if key == 'ssh' else [
             'GLaDOS must be stopped.', 'No model / voice configuration changes.']
         self.confirmation.ask(action.title() + ' ' + UNITS[key][0], detail, lambda: self.change(key, action))
 

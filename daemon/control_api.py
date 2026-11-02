@@ -1,5 +1,6 @@
 """Voice bridge to existing built-ins. No model text becomes a command or path."""
 from dataclasses import asdict
+import json
 import os
 import re
 from pathlib import Path
@@ -12,7 +13,7 @@ import threading
 import time
 import uuid
 
-from internal_apps.control_client import HELPER
+from internal_apps.control_client import HELPER, control
 from internal_apps.wifi_app import WifiNetwork
 
 APP = 'whisplay-ai-chatbot'
@@ -20,6 +21,7 @@ READS = {'capabilities', 'apps', 'display', 'audio', 'network', 'wifi', 'bluetoo
 ACTIONS = {'brightness', 'volume', 'mute', 'home', 'lock', 'recording', 'wifi', 'wifi_scan', 'wifi_profile', 'wifi_join',
            'bluetooth', 'bluetooth_scan', 'bluetooth_device', 'service', 'reboot', 'shutdown'}
 SERVICES = {'ssh', 'ollama', 'whisper', 'piper'}
+PRIVILEGED_ACTIONS = {'wifi', 'wifi_profile', 'wifi_join', 'service', 'reboot', 'shutdown'}
 
 
 class ControlAPI:
@@ -43,16 +45,26 @@ class ControlAPI:
 
     def helper_available(self):
         try:
-            info = Path(HELPER).lstat()
-            safe = stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022 and os.access(HELPER, os.X_OK)
-            return safe and subprocess.run(['/usr/bin/sudo', '-n', '-l', HELPER], timeout=2,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-        except (OSError, subprocess.SubprocessError):
+            path = Path(HELPER)
+            info = path.lstat()
+            if not (stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022 and os.access(HELPER, os.X_OK)):
+                return False
+            for parent in path.parents:
+                item = parent.lstat()
+                if not stat.S_ISDIR(item.st_mode) or item.st_uid != 0 or item.st_mode & 0o022:
+                    return False
+            result = subprocess.run(['/usr/bin/sudo', '-n', HELPER, 'capabilities'], timeout=2,
+                                    capture_output=True, text=True)
+            if result.returncode != 0 or len(result.stdout) > 4096:
+                return False
+            capability = json.loads(result.stdout)
+            return capability.get('api') == 2 and capability.get('ssh_guard') is True and capability.get('wifi_checkpoint_seconds') == 120
+        except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
             return False
 
-    def capabilities(self):
+    def capabilities(self, *, privileged=True):
         manager = self.daemon.internal_apps
-        helper = self.helper_available()
+        helper = self.helper_available() if privileged else False
         audio = bool(manager.volume._find_wm8960_card())
         nm = bool(shutil.which('nmcli'))
         bt = bool(shutil.which('bluetoothctl'))
@@ -78,7 +90,7 @@ class ControlAPI:
                     'bluetooth': {**feature(bt and self.confirmations, True, 'BlueZ / confirmation unavailable'), 'immediate_enable': True},
                     'bluetooth_scan': feature(bt, reason='BlueZ controller unavailable'),
                     'bluetooth_device': feature(bt and self.confirmations, True, 'BlueZ / confirmation unavailable'),
-                    'service': privileged(bool(shutil.which('systemctl'))), 'reboot': privileged(), 'shutdown': privileged()},
+                    'service': {**privileged(bool(shutil.which('systemctl'))), 'immediate_start': True}, 'reboot': privileged(), 'shutdown': privileged()},
                 'readable': ['capabilities', 'apps', 'display'] + (['audio'] if audio else []) +
                     (['network'] if nm or bt else []) + (['wifi'] if nm else []) + (['bluetooth'] if bt else []) +
                     (['services'] if shutil.which('systemctl') else []),
@@ -87,6 +99,8 @@ class ControlAPI:
                           'CPU/RAM/temperature/storage are supplied by the existing getSystemHealth tool.',
                           'Wi-Fi passwords are entered only on the local Network screen, never through voice tools.',
                           'Bluetooth device actions require a uniquely discovered device and local confirmation.',
+                          'Active SSH sessions block disruptive Wi-Fi operations and SSH restart; service start is immediate.',
+                          'Wi-Fi profile changes require a NetworkManager checkpoint; radio recovery uses local Network controls.',
                           'Radio authorization is checked by the existing operations; no hardware power-on is promised.']}
 
     def read(self, scope):
@@ -173,7 +187,7 @@ class ControlAPI:
                 raise ValueError('Valid discovered target required')
         if set(p) != permitted:
             raise ValueError('Unexpected or missing action parameters')
-        feature = self.capabilities()['actions'][action]
+        feature = self.capabilities(privileged=action in PRIVILEGED_ACTIONS)['actions'][action]
         if not feature['supported']:
             raise RuntimeError(feature.get('reason') or 'Action unavailable')
         m = self.daemon.internal_apps
@@ -202,9 +216,18 @@ class ControlAPI:
                 p['interface'] = m.wifi.device
         return p
 
+    def check_ssh(self):
+        control(self.daemon.internal_apps._run_command, 'check-ssh')
+
     def execute(self, payload):
         p = self.normalize(payload)
         d, m, action = self.daemon, self.daemon.internal_apps, p['action']
+        if action == 'service' and p['operation'] == 'start':
+            if m.services.state.busy:
+                raise RuntimeError('Service operation already in progress')
+            m.services.apply_start(p['service'])
+            return {'status': 'completed', 'action': action, 'operation': 'start', 'service': p['service'],
+                    'actual': m.services.statuses[p['service']], 'verification': 'systemd_readback'}
         if action == 'mute':
             if m.volume.state.busy:
                 raise RuntimeError('Audio operation already in progress')
@@ -257,6 +280,9 @@ class ControlAPI:
                     actual = d._brightness
             return {'status': 'completed', 'action': action, 'previous': previous, 'actual': actual,
                     'unit': '%', 'verification': 'mixer_readback' if action == 'volume' else 'daemon_commanded'}
+        if (action == 'wifi' and not p['enabled'] or action in ('wifi_profile', 'wifi_join')
+                or action == 'service' and p['operation'] == 'restart' and p['service'] == 'ssh'):
+            self.check_ssh()  # No pointless handoff if it is already unsafe; helper rechecks at execution.
         if self.pending:
             raise RuntimeError('A device handoff is already pending; cancel it before another request')
         app = d.apps.get(APP)
@@ -333,6 +359,10 @@ class ControlAPI:
             target = {'recording': m.volume, 'wifi': m.wifi, 'wifi_profile': m.wifi, 'wifi_join': m.wifi,
                       'bluetooth': m.bluetooth, 'bluetooth_device': m.bluetooth,
                       'service': m.services, 'reboot': m.system, 'shutdown': m.system}[action]
+            # A held PTT gesture/release must never select or accept this dialog.
+            # A fresh physical press clears the ignore flag in _on_button_pressed.
+            d._button_press_started_at = 0.0
+            d._ignore_button_release = True
             d._launch_app(d.apps[target.APP_ID])
             if action in ('reboot', 'shutdown'):
                 target.ask_power('reboot' if action == 'reboot' else 'poweroff')
@@ -343,7 +373,7 @@ class ControlAPI:
             elif action == 'wifi_profile':
                 callback = (lambda: target.change('wifi-connect', p['profile_id'])) if p['operation'] == 'connect' else (
                     lambda: target.change('wifi-disconnect', p['interface']))
-                target.confirmation.ask(p['operation'].title() + ' Wi-Fi', ['May disconnect SSH.', 'Recover in Network with button.'], callback)
+                target.confirmation.ask(p['operation'].title() + ' Wi-Fi', ['Blocked during active SSH.', 'Recover in Network with button.'], callback)
             elif action == 'bluetooth_device':
                 operation = 'remove' if p['operation'] == 'forget' else p['operation']
                 target.confirmation.ask(p['operation'].title() + ' Bluetooth', [p['device'][:32], p['address']],
@@ -355,7 +385,7 @@ class ControlAPI:
                     detail = ['GLaDOS only; not hardware mute.', 'Enable again here in Audio.']
                 elif action == 'wifi':
                     callback = lambda: target.change('wifi-radio', 'on' if enabled else 'off')
-                    detail = ['May disconnect SSH.', 'Enable locally in Network.']
+                    detail = ['Blocked during active SSH.', 'Enable locally in Network.']
                 else:
                     callback = lambda: target.change('power', enabled=enabled)
                     detail = ['May disconnect devices.', 'Enable locally in Network.']

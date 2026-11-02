@@ -820,6 +820,8 @@ class WhisplayDaemon:
             if not self.foreground_app_id or self.internal_apps.is_internal_app(self.foreground_app_id):
                 self._set_rgb(0, 0, 0)
             now = time.time()
+            if self.foreground_app_id and self.internal_apps.is_internal_app(self.foreground_app_id) and not self._button_press_started_at:
+                return  # Unmatched/stale PTT releases cannot drive local confirmations.
             press_duration = now - self._button_press_started_at if self._button_press_started_at else 0
             self._button_press_started_at = 0.0
             keyboard_hold_cancel_fired = self._keyboard_hold_cancel_fired

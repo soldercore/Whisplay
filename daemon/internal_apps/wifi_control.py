@@ -4,7 +4,7 @@ import time
 
 from .menu import MenuApp
 from .wifi_app import WifiInternalApp, WifiViewState, WifiNetwork, SCREEN_KEYBOARD_ROWS
-from .control_client import control
+from .control_client import control, ControlBlocked
 
 
 class WifiControl(MenuApp, WifiInternalApp):
@@ -73,7 +73,12 @@ class WifiControl(MenuApp, WifiInternalApp):
         self.note('Radio on' if radio else 'Radio off; enable locally' if radio is False else 'Radio unavailable')
 
     def scan(self):
-        self._read(['device', 'wifi', 'rescan'], 15)
+        try:
+            self._read(['device', 'wifi', 'rescan'], 15)
+        except RuntimeError:
+            # Headless polkit may require authorization; keep already-authorized
+            # users unprivileged and use only the fixed scan fallback otherwise.
+            control(self._run_command, 'wifi-scan')
         self.refresh()
 
     def change(self, *args, payload=None):
@@ -82,6 +87,8 @@ class WifiControl(MenuApp, WifiInternalApp):
     def apply_change(self, *args, payload=None):
         try:
             control(self._run_command, *args, payload=payload)
+        except ControlBlocked:
+            raise
         except Exception:
             raise RuntimeError('Wi-Fi action failed; check permissions / credentials') from None
         self.refresh()

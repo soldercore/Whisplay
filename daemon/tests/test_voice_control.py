@@ -26,6 +26,7 @@ class VoiceControlTests(unittest.TestCase):
         d._render_internal_app = Mock()
         d.internal_apps.volume._find_wm8960_card = Mock(return_value='2')
         api = ControlAPI(d, authorize=Mock())
+        api.check_ssh = Mock()
         return api, d
 
     def test_capabilities_fail_closed_for_uninstalled_helper(self):
@@ -151,7 +152,7 @@ class VoiceControlTests(unittest.TestCase):
 
     def supported_api(self):
         api, d = self.setup_api()
-        api.capabilities = lambda: {'actions': {a: {'supported': True} for a in __import__('control_api').ACTIONS}}
+        api.capabilities = lambda **kwargs: {'actions': {a: {'supported': True} for a in __import__('control_api').ACTIONS}}
         return api, d
 
     def finish_handoff(self, api, d, result):

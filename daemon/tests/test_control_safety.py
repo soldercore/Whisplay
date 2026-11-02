@@ -80,7 +80,7 @@ class ControlSafetyTests(unittest.TestCase):
         runner = Mock(return_value=SimpleNamespace(returncode=0, stdout='LoadState=loaded\nActiveState=active'))
         app = self.services(runner)
         app.ask_service('ssh', 'restart')
-        self.assertIn('SSH access', str(app.view_model()['detail_lines']))
+        self.assertIn('active SSH', str(app.view_model()['detail_lines']))
         app.handle_button(True)
         runner.assert_not_called()
         app.ask_service('ssh', 'restart')
@@ -137,7 +137,7 @@ class ControlSafetyTests(unittest.TestCase):
             real_temporary_directory = tempfile.TemporaryDirectory
             def local_directory(**kwargs):
                 return real_temporary_directory(dir=directory)
-            with patch.object(control_action.tempfile, 'TemporaryDirectory', side_effect=local_directory), patch.object(control_action, 'nm') as nm:
+            with patch.object(control_action.tempfile, 'TemporaryDirectory', side_effect=local_directory), patch.object(control_action, 'nm') as nm, patch.object(control_action, 'guard_ssh'), patch.object(control_action, 'wifi_checkpoint', side_effect=__import__('contextlib').nullcontext):
                 control_action.dispatch(['wifi-join'], lambda size: json.dumps({
                     'ssid': 'Synthetic Only', 'password': 'synthetic-password', 'security': 'wpa-psk'}))
                 self.assertNotIn('synthetic-password', str(nm.call_args_list))
