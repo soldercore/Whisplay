@@ -182,8 +182,9 @@ class CyberDesktopRenderer:
         end = stack.draw(draw, image, x, baseline, name, name_color)
         self._cursor(draw, int(end + 4), baseline)
         running = app.is_running()
+        error = getattr(app, "last_error", "")
         state = "RUNNING" if running else "STOPPED"
-        meta = "%s  %02d/%02d" % (state, index + 1, total)
+        meta = fit_text(fonts.pixel8, error, 190) if error else "%s  %02d/%02d" % (state, index + 1, total)
         meta_w = fonts.pixel8.width(meta) + 9
         mx = int(cx - meta_w / 2)
         my = top + 62

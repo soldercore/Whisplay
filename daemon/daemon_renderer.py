@@ -372,6 +372,8 @@ class DesktopRenderer:
 
         selected = apps[selected_index % len(apps)]
         status = "running" if selected.is_running() else "stopped"
+        if getattr(selected, "last_error", ""):
+            status = selected.last_error[:28]
         selected_color = (120, 255, 140) if pending_app_id == selected.app_id else (80, 160, 255)
         draw.text((left, top_margin + 46), selected.display_name, fill=selected_color, font=self.body_font)
         draw.text((left, top_margin + 68), f"State: {status}", fill=(170, 220, 170), font=self.small_font)

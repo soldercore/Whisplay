@@ -27,6 +27,7 @@ class AppRecord:
     framebuffer_path: str | None = None
     framebuffer_file = None
     framebuffer_mmap: mmap.mmap | None = None
+    last_error: str = ""
 
     def is_running(self) -> bool:
         return self.process is not None and self.process.poll() is None

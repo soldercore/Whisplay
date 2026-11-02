@@ -94,6 +94,8 @@ class WhisplayDaemon:
         self.pending_launch_app_id: str | None = None
         self.pending_launch_started_at = 0.0
         self.exit_request = None
+        self._app_exits = {}
+        self._ignore_button_release = False
         self.last_frame = None
         self._button_press_started_at = 0.0
         self._recent_release_times: list[float] = []
@@ -161,9 +163,7 @@ class WhisplayDaemon:
             elif action == "down":
                 self._move_desktop_selection(1)
             elif action == "submit":
-                selected = self._current_selected_app()
-                if selected is not None:
-                    self._launch_app(selected)
+                self._open_selected_app()
 
     def _on_joystick_pressed(self, direction: str):
         keyboard_action = None
@@ -401,12 +401,16 @@ class WhisplayDaemon:
             app.process_log_handle = None
 
     def _grant_focus(self, app: AppRecord):
+        if app.app_id in getattr(self, "_app_exits", {}):
+            raise RuntimeError("app is stopping; return Home and try again")
         if self.foreground_app_id and self.foreground_app_id != app.app_id:
             raise RuntimeError("another app is already foreground")
         app.session_token = uuid.uuid4().hex
         self._teardown_framebuffer(app)
         self._allocate_framebuffer(app)
         self.foreground_app_id = app.app_id
+        self._recent_release_times = []
+        self._ignore_button_release = self._button_press_started_at > 0
         self.pending_launch_app_id = None
         self.pending_launch_started_at = 0.0
         self.exit_request = None
@@ -420,6 +424,8 @@ class WhisplayDaemon:
         )
 
     def _release_focus(self, app: AppRecord, reason: str):
+        self._recent_release_times = []
+        self._ignore_button_release = self._button_press_started_at > 0
         self.event_broadcaster.broadcast(
             "app_focus_revoked",
             {"app_id": app.app_id, "reason": reason},
@@ -441,17 +447,71 @@ class WhisplayDaemon:
         if self.internal_apps.is_internal_app(app.app_id):
             self._release_focus(app, reason)
             return
+        if self.exit_request and self.exit_request["app_id"] == app.app_id:
+            return
+        if app.app_id in getattr(self, "_app_exits", {}):
+            return
         self._foreground_long_press_fired = True
         self.exit_request = {
             "app_id": app.app_id,
             "deadline": time.time() + EXIT_REQUEST_TIMEOUT_SEC,
             "reason": reason,
         }
+        # Track the exact child object created with start_new_session=True.
+        # A lost UI/model callback must not leave recording alive behind Home.
+        process = getattr(app, "process", None)
+        if process is not None and process.poll() is None:
+            if not hasattr(self, "_app_exits"):
+                self._app_exits = {}
+            self._app_exits[app.app_id] = {
+                "process": process, "deadline": self.exit_request["deadline"], "phase": "notify",
+            }
         self.event_broadcaster.broadcast(
             "app_exit_requested",
             {"app_id": app.app_id, "reason": reason},
             app_id=app.app_id,
         )
+
+    def _advance_app_exits(self, now: float):
+        for app_id, pending in list(getattr(self, "_app_exits", {}).items()):
+            app = self.apps.get(app_id)
+            process = pending["process"]
+            if app is None or app.process is not process or process.poll() is not None:
+                del self._app_exits[app_id]
+                continue
+            if now < pending["deadline"]:
+                continue
+            if self.foreground_app_id == app_id:
+                self._release_focus(app, "exit_timeout")
+            if pending["phase"] == "kill":
+                app.last_error = "App still stopping; use Power if needed"
+                pending["deadline"] = float("inf")
+                continue
+            sig = signal.SIGTERM if pending["phase"] == "notify" else getattr(signal, "SIGKILL", signal.SIGTERM)
+            try:
+                if hasattr(os, "killpg"):
+                    os.killpg(process.pid, sig)
+                elif pending["phase"] == "notify":
+                    process.terminate()
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass  # Poll/reap on the next monitor tick; never signal a replacement child.
+            except OSError as exc:
+                app.last_error = f"App stop failed: {exc}"
+            pending["phase"] = "term" if pending["phase"] == "notify" else "kill"
+            pending["deadline"] = now + 2.0
+
+    def _open_selected_app(self):
+        selected = self._current_selected_app()
+        if selected is None:
+            return
+        try:
+            self._launch_app(selected)
+        except Exception as exc:
+            selected.last_error = str(exc)
+            print(f"[WhisplayDaemon] App launch refused: {selected.app_id}: {exc}")
+            self._render_desktop()
 
     def _request_exit_from_pisugar(self):
         if not self.foreground_app_id:
@@ -564,6 +624,8 @@ class WhisplayDaemon:
             self.internal_apps.activate(app.app_id)
             self._render_internal_app()
             return
+        if any(item["process"].poll() is None for item in getattr(self, "_app_exits", {}).values()):
+            raise RuntimeError("Previous app is stopping; try again shortly")
         if not app.launch_command:
             raise RuntimeError(f"app {app.app_id} has no launch command")
         if app.is_running():
@@ -581,6 +643,7 @@ class WhisplayDaemon:
         cwd = app.cwd or None
         stdout_target = None
         try:
+            app.last_error = ""
             if app.use_daemon_default_log:
                 os.makedirs(DEFAULT_DAEMON_HOME, exist_ok=True)
                 app.process_log_handle = open(DEFAULT_APP_LOG_PATH, "ab")
@@ -608,6 +671,7 @@ class WhisplayDaemon:
         with self.state_lock:
             if self._screen_locked:
                 return
+            self._ignore_button_release = False
             self._button_press_started_at = time.time()
             self._foreground_long_press_fired = False
             self._keyboard_hold_cancel_fired = False
@@ -624,6 +688,10 @@ class WhisplayDaemon:
         with self.state_lock:
             if self._screen_locked:
                 self._unlock_screen()
+                return
+            if getattr(self, "_ignore_button_release", False):
+                self._ignore_button_release = False
+                self._button_press_started_at = 0.0
                 return
             if not self.foreground_app_id or self.internal_apps.is_internal_app(self.foreground_app_id):
                 self.board.set_rgb(0, 0, 0)
@@ -694,14 +762,10 @@ class WhisplayDaemon:
                 self._render_desktop()
                 return
             if self.joy_mode:
-                selected = self._current_selected_app()
-                if selected is not None:
-                    self._launch_app(selected)
+                self._open_selected_app()
                 return
             if press_duration >= BUTTON_LONG_PRESS_SEC:
-                selected = self._current_selected_app()
-                if selected is not None:
-                    self._launch_app(selected)
+                self._open_selected_app()
             else:
                 self.selected_app_index = (self.selected_app_index + 1) % len(apps)
                 self._render_desktop()
@@ -841,6 +905,7 @@ class WhisplayDaemon:
                     self.pending_launch_started_at = 0.0
                     self._render_desktop()
                 self._process_button_hold()
+                self._advance_app_exits(time.time())
                 if self.exit_request is not None and time.time() >= self.exit_request["deadline"]:
                     app = self.apps.get(self.exit_request["app_id"])
                     if app and self.foreground_app_id == app.app_id:
