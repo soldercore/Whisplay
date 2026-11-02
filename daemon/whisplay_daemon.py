@@ -84,7 +84,22 @@ class WhisplayDaemon:
         )
         self.pisugar = PiSugarManager()
         self.status_poller = StatusPoller(self.pisugar)
-        self.internal_apps = InternalAppManager(self._lock_screen)
+        self._brightness = 100
+        self._led_rgb = (0, 0, 0)
+        self._maintenance = False
+        self._recording_path = os.path.join(os.path.dirname(self.settings_path), 'control-center.json')
+        try:
+            with open(self._recording_path, encoding='utf-8') as recording_file:
+                recording = json.load(recording_file)
+            self._recording_enabled = recording.get('glados_recording_enabled') is True
+        except FileNotFoundError:
+            self._recording_enabled = True
+        except (OSError, ValueError, AttributeError):
+            self._recording_enabled = False  # Invalid state must not silently unlock recording.
+        self.internal_apps = InternalAppManager(
+            self._lock_screen, glados_status=self._glados_status, set_recording=self._set_recording,
+            get_display=lambda: {'brightness': self._brightness, 'rgb': self._led_rgb},
+            set_brightness=self._set_brightness, battery=lambda: self.status_poller.battery_level)
         self.keyboard_reader = ExternalKeyboardReader()
         self.pisugar_home_button = self._normalize_pisugar_home_button(pisugar_home_button)
         self.autostart_app_id = str(autostart_app_id or "").strip()
@@ -116,7 +131,7 @@ class WhisplayDaemon:
             self.board.on_joystick_release(self._on_joystick_released)
 
     def _move_desktop_selection(self, delta: int):
-        apps = self._app_list()
+        apps = self._home_apps()
         if not apps:
             self._render_desktop()
             return
@@ -145,6 +160,7 @@ class WhisplayDaemon:
             if self.foreground_app_id and self.internal_apps.is_internal_app(self.foreground_app_id):
                 if action in {"up", "down", "submit"}:
                     self.internal_apps.handle_keyboard_action(self.foreground_app_id, action)
+                    self._consume_internal_navigation()
                     if self.internal_apps.exit_requested:
                         self.internal_apps.clear_exit_requested()
                         app = self.apps.get(self.foreground_app_id)
@@ -304,8 +320,48 @@ class WhisplayDaemon:
             key=lambda app: (-app.priority, app.display_name.lower(), app.app_id),
         )
 
+    def _home_apps(self):
+        order = ('whisplay-ai-chatbot', 'whisplay-network', 'whisplay-volume',
+                 'whisplay-display', 'whisplay-information', 'whisplay-services', 'whisplay-system')
+        visible = [app for app in self._app_list() if app.app_id not in ('whisplay-wifi', 'whisplay-bluetooth')]
+        # Preserve original order among unrelated installed applications.
+        return sorted(visible, key=lambda app: order.index(app.app_id) if app.app_id in order else len(order))
+
+    def _glados_status(self):
+        app = getattr(self, 'apps', {}).get('whisplay-ai-chatbot')
+        return {'running': bool(app and app.is_running()),
+                'starting': getattr(self, 'pending_launch_app_id', None) == 'whisplay-ai-chatbot',
+                'stopping': 'whisplay-ai-chatbot' in getattr(self, '_app_exits', {}),
+                'recording_enabled': getattr(self, '_recording_enabled', True),
+                'config_path': os.path.join(app.cwd, '.env') if app and app.cwd else None}
+
+    def _set_recording(self, enabled):
+        with self.state_lock:
+            status = self._glados_status()
+            if status['running'] or status['starting'] or status['stopping']:
+                raise RuntimeError('GLaDOS is still stopping; retry when stopped')
+            # Persist before publishing an unlock. A failed write leaves the old state.
+            write_json_file(self._recording_path, {'glados_recording_enabled': bool(enabled)})
+            self._recording_enabled = bool(enabled)
+
+    def _set_brightness(self, value):
+        value = max(0, min(100, int(value)))
+        self.board.set_backlight(value)
+        self._brightness = value
+
+    def _set_rgb(self, r, g, b):
+        self.board.set_rgb(r, g, b)
+        self._led_rgb = (r, g, b)
+
+    def _consume_internal_navigation(self):
+        if not hasattr(self.internal_apps, 'consume_navigation'):
+            return
+        target = self.internal_apps.consume_navigation()
+        if target and target in self.apps:
+            self._launch_app(self.apps[target])
+
     def _current_selected_app(self) -> AppRecord | None:
-        apps = self._app_list()
+        apps = self._home_apps()
         if not apps:
             return None
         self.selected_app_index %= len(apps)
@@ -321,7 +377,7 @@ class WhisplayDaemon:
                     f"[WhisplayDaemon] Autostart app not found: {self.autostart_app_id}"
                 )
                 return
-            apps = self._app_list()
+            apps = self._home_apps()
             self.selected_app_index = next(
                 (index for index, item in enumerate(apps) if item.app_id == app.app_id),
                 self.selected_app_index,
@@ -343,7 +399,7 @@ class WhisplayDaemon:
                     running_app_id = app.app_id
                     break
         self.desktop.render(
-            self._app_list(),
+            self._home_apps(),
             self.selected_app_index,
             self.pending_launch_app_id,
             running_app_id,
@@ -401,6 +457,10 @@ class WhisplayDaemon:
             app.process_log_handle = None
 
     def _grant_focus(self, app: AppRecord):
+        if app.app_id == 'whisplay-ai-chatbot' and not getattr(self, '_recording_enabled', True):
+            raise RuntimeError('Recording locked; enable in Audio')
+        if getattr(self, '_maintenance', False):
+            raise RuntimeError('Service maintenance in progress')
         if app.app_id in getattr(self, "_app_exits", {}):
             raise RuntimeError("app is stopping; return Home and try again")
         if self.foreground_app_id and self.foreground_app_id != app.app_id:
@@ -424,6 +484,8 @@ class WhisplayDaemon:
         )
 
     def _release_focus(self, app: AppRecord, reason: str):
+        if self.internal_apps.is_internal_app(app.app_id) and hasattr(self.internal_apps, 'deactivate'):
+            self.internal_apps.deactivate()
         self._recent_release_times = []
         self._ignore_button_release = self._button_press_started_at > 0
         self.event_broadcaster.broadcast(
@@ -532,6 +594,11 @@ class WhisplayDaemon:
 
     def _lock_screen(self):
         app = self.apps.get(self.foreground_app_id) if self.foreground_app_id else None
+        if app is not None and hasattr(self, 'internal_apps'):
+            if not self.internal_apps.is_internal_app(app.app_id):
+                self._request_exit(app, 'screen_locked')
+            elif hasattr(self.internal_apps, 'deactivate'):
+                self.internal_apps.deactivate()
         if app is not None:
             app.session_token = None
             self._teardown_framebuffer(app)
@@ -546,7 +613,7 @@ class WhisplayDaemon:
         self._last_lock_led_level = -1
         self.last_frame = None
         self.board.set_backlight(0)
-        self.board.set_rgb(0, 0, 0)
+        self._set_rgb(0, 0, 0)
         self.event_broadcaster.broadcast("screen_locked")
 
     def _unlock_screen(self):
@@ -556,8 +623,8 @@ class WhisplayDaemon:
         self._button_press_started_at = 0.0
         self._foreground_long_press_fired = False
         self._keyboard_hold_cancel_fired = False
-        self.board.set_rgb(0, 0, 0)
-        self.board.set_backlight(100)
+        self._set_rgb(0, 0, 0)
+        self.board.set_backlight(max(20, getattr(self, "_brightness", 100)))
         self._render_desktop()
         self.event_broadcaster.broadcast("screen_unlocked")
 
@@ -566,7 +633,7 @@ class WhisplayDaemon:
         phase = (math.sin((2.0 * math.pi * elapsed) / 2.4) + 1.0) / 2.0
         blue = int(12 + 118 * phase)
         if blue != self._last_lock_led_level:
-            self.board.set_rgb(0, 0, blue)
+            self._set_rgb(0, 0, blue)
             self._last_lock_led_level = blue
 
     def _init_pisugar_integration(self):
@@ -624,6 +691,10 @@ class WhisplayDaemon:
             self.internal_apps.activate(app.app_id)
             self._render_internal_app()
             return
+        if getattr(self, '_maintenance', False):
+            raise RuntimeError('Service maintenance in progress; try again shortly')
+        if app.app_id == 'whisplay-ai-chatbot' and not getattr(self, '_recording_enabled', True):
+            raise RuntimeError('Recording locked; enable in Audio')
         if any(item["process"].poll() is None for item in getattr(self, "_app_exits", {}).values()):
             raise RuntimeError("Previous app is stopping; try again shortly")
         if not app.launch_command:
@@ -676,7 +747,7 @@ class WhisplayDaemon:
             self._foreground_long_press_fired = False
             self._keyboard_hold_cancel_fired = False
             if not self.foreground_app_id or self.internal_apps.is_internal_app(self.foreground_app_id):
-                self.board.set_rgb(0, 0, 255)
+                self._set_rgb(0, 0, 255)
             if self.foreground_app_id and not self.internal_apps.is_internal_app(self.foreground_app_id):
                 self.event_broadcaster.broadcast(
                     "button_pressed",
@@ -694,7 +765,7 @@ class WhisplayDaemon:
                 self._button_press_started_at = 0.0
                 return
             if not self.foreground_app_id or self.internal_apps.is_internal_app(self.foreground_app_id):
-                self.board.set_rgb(0, 0, 0)
+                self._set_rgb(0, 0, 0)
             now = time.time()
             press_duration = now - self._button_press_started_at if self._button_press_started_at else 0
             self._button_press_started_at = 0.0
@@ -749,6 +820,7 @@ class WhisplayDaemon:
                             press_duration >= BUTTON_LONG_PRESS_SEC,
                         )
                     self.pisugar.poll_home_trigger()
+                    self._consume_internal_navigation()
                     if self.internal_apps.exit_requested:
                         self.internal_apps.clear_exit_requested()
                         self._release_focus(app, "list_back")
@@ -757,7 +829,7 @@ class WhisplayDaemon:
                 return
 
             self._recent_release_times = []
-            apps = self._app_list()
+            apps = self._home_apps()
             if not apps:
                 self._render_desktop()
                 return
@@ -786,7 +858,7 @@ class WhisplayDaemon:
             if not self.foreground_app_id or self.internal_apps.is_internal_app(
                 self.foreground_app_id
             ):
-                self.board.set_rgb(0, 0, 0)
+                self._set_rgb(0, 0, 0)
             return
 
         joy_keyboard_active = (
@@ -805,7 +877,7 @@ class WhisplayDaemon:
 
         if self._keyboard_hold_cancel_fired:
             flash_on = int(now * 5) % 2 == 0
-            self.board.set_rgb(255, 0, 0) if flash_on else self.board.set_rgb(0, 0, 0)
+            self._set_rgb(255, 0, 0) if flash_on else self._set_rgb(0, 0, 0)
             return
 
         legacy_long_press_active = (
@@ -827,10 +899,10 @@ class WhisplayDaemon:
                 self._request_exit(app, "long_press_exit")
             elif self.internal_apps.is_internal_app(self.foreground_app_id):
                 flash_on = int(now * 5) % 2 == 0
-                self.board.set_rgb(0, 255, 0) if flash_on else self.board.set_rgb(0, 0, 0)
+                self._set_rgb(0, 255, 0) if flash_on else self._set_rgb(0, 0, 0)
         else:
             flash_on = int(now * 5) % 2 == 0
-            self.board.set_rgb(0, 255, 0) if flash_on else self.board.set_rgb(0, 0, 0)
+            self._set_rgb(0, 255, 0) if flash_on else self._set_rgb(0, 0, 0)
 
     def _render_loop(self):
         interval = 1.0 / RENDER_FPS
@@ -888,6 +960,7 @@ class WhisplayDaemon:
                 if self.pending_launch_app_id and not self.foreground_app_id:
                     self._render_desktop()
                 if self.foreground_app_id and self.internal_apps.is_internal_app(self.foreground_app_id):
+                    self._consume_internal_navigation()
                     self.internal_apps.tick(self.foreground_app_id)
                     if self.internal_apps.consume_dirty():
                         self._render_internal_app()
@@ -1092,11 +1165,11 @@ class WhisplayDaemon:
                 return {"ok": True}, False
 
             if cmd == "backlight.set":
-                self.board.set_backlight(int(payload.get("brightness", 0)))
+                self._set_brightness(int(payload.get("brightness", 0)))
                 return {"ok": True}, False
 
             if cmd == "led.set":
-                self.board.set_rgb(
+                self._set_rgb(
                     int(payload.get("r", 0)),
                     int(payload.get("g", 0)),
                     int(payload.get("b", 0)),
@@ -1104,6 +1177,7 @@ class WhisplayDaemon:
                 return {"ok": True}, False
 
             if cmd == "led.fade":
+                self._led_rgb = None
                 self.board.set_rgb_fade(
                     int(payload.get("r", 0)),
                     int(payload.get("g", 0)),
@@ -1164,7 +1238,7 @@ class WhisplayDaemon:
         self.server_socket.bind(self.socket_path)
         os.chmod(self.socket_path, 0o666)
         self.server_socket.listen(8)
-        self.board.set_rgb(0, 0, 0)
+        self._set_rgb(0, 0, 0)
         self.board.set_backlight(100)
         self._refresh_status_icons(force=True)
         self._render_desktop()

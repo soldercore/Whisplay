@@ -310,7 +310,7 @@ class DaemonIntegrationTests(unittest.TestCase):
 
     def test_selection_wraps_like_before(self):
         daemon = self.make_daemon()
-        total = len(daemon.apps)
+        total = len(daemon._home_apps())
         for _ in range(total):
             daemon._move_desktop_selection(1)
         self.assertEqual(daemon.selected_app_index, 0)

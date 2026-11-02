@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import tempfile
 
 from PIL import Image
 
@@ -51,9 +52,18 @@ def load_json_file(path: str) -> dict:
 
 def write_json_file(path: str, payload: dict):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fp:
-        json.dump(payload, fp, ensure_ascii=True, indent=2)
-        fp.write("\n")
+    directory = os.path.dirname(os.path.abspath(path))
+    descriptor, temporary = tempfile.mkstemp(prefix='.settings-', dir=directory)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as fp:
+            json.dump(payload, fp, ensure_ascii=True, indent=2)
+            fp.write('\n')
+            fp.flush()
+            os.fsync(fp.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def resolve_runtime_config(args):
