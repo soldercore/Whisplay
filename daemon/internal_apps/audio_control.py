@@ -43,6 +43,12 @@ class AudioControl(MenuApp, VolumeInternalApp):
         self.note('Microphone gain unchanged; software lock affects GLaDOS only')
 
     def volume(self, target):
+        self.perform(lambda: self.apply_volume(target))
+
+    def apply_volume(self, target):
+        """Shared UI/voice operation, including actual mixer readback."""
+        if type(target) is not int or not 0 <= target <= 100:
+            raise ValueError('Volume must be an integer from 0 to 100')
         def work():
             # Re-detect just before changing the original speaker control.
             card, name, maximum = self._detect_volume_control()
@@ -55,7 +61,8 @@ class AudioControl(MenuApp, VolumeInternalApp):
                 self.note(f'Actual speaker volume {self.state.current_percent}%')
             else:
                 self.note(f'Speaker volume {target}%')
-        self.perform(work)
+            return self.state.current_percent
+        return work()
 
     def toggle_recording(self):
         enabled = not self.glados_status().get('recording_enabled', False)

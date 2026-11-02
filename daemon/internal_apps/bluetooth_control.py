@@ -50,10 +50,11 @@ class BluetoothControl(MenuApp, BluetoothInternalApp):
             self.powered, self.state.devices = powered, devices
         self.note('Radio on' if powered else 'Radio off' if powered is False else 'Radio unavailable')
 
-    def change(self, action, address=None):
+    def change(self, action, address=None, enabled=None):
         def work():
             if action == 'power':
-                self.checked('power', 'off' if self.powered else 'on')
+                desired = not self.powered if enabled is None else enabled
+                self.checked('power', 'on' if desired else 'off')
             elif action == 'scan':
                 self.checked('--timeout', '5', 'scan', 'on', timeout=9)
             else:

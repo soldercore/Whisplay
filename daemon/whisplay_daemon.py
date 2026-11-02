@@ -21,6 +21,7 @@ if RUNTIME_DIR not in sys.path:
 from daemon_events import EventBroadcaster
 from daemon_models import AppRecord
 from daemon_processes import process_group_members
+from control_api import ControlAPI
 from daemon_pisugar import PISUGAR3_POWER_BUTTON_POLL_INTERVAL_SEC, PiSugarManager
 from daemon_renderer import DesktopRenderer
 try:
@@ -127,6 +128,7 @@ class WhisplayDaemon:
         self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._load_apps()
         self._register_internal_apps()
+        self.control_api = ControlAPI(self)
         self.board.on_button_press(self._on_button_pressed)
         self.board.on_button_release(self._on_button_released)
         if self.joy_mode:
@@ -1027,6 +1029,8 @@ class WhisplayDaemon:
                     self._render_desktop()
                 self._process_button_hold()
                 self._advance_app_exits(time.time())
+                if hasattr(self, 'control_api'):
+                    self.control_api.advance()
                 if self.exit_request is not None and time.time() >= self.exit_request["deadline"]:
                     app = self.apps.get(self.exit_request["app_id"])
                     if app and self.foreground_app_id == app.app_id:
@@ -1114,12 +1118,16 @@ class WhisplayDaemon:
         if not isinstance(payload, dict):
             payload = {}
 
+        if cmd.startswith('control.'):
+            return {'ok': True, 'payload': self.control_api.handle(cmd, payload, conn)}, False
+
         with self.state_lock:
             if cmd == "health.ping":
                 return {
                     "ok": True,
                     "payload": {
                         "service": "whisplay-daemon",
+                        "control_api": 1,
                         "screen": {
                             "width": SCREEN_WIDTH,
                             "height": SCREEN_HEIGHT,
