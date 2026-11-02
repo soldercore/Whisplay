@@ -12,11 +12,19 @@ class BluetoothControl(MenuApp, BluetoothInternalApp):
         MenuApp.__init__(self, *args)
         self.state = BluetoothViewState()
         self.powered = None
+        self.active = False
+        self.pairing_address = None
         self._strip_ansi = lambda text: re.sub(r'\x1b\[[0-9;]*m', '', text)
         self._pairing_agent = BluetoothPairingAgent(self._update_pairing_state)
 
+    def activate(self):
+        MenuApp.activate(self)
+        self.active = True
+
     def deactivate(self):
         MenuApp.deactivate(self)
+        self.active = False
+        self.state.pairing_active = False
         self._pairing_agent.cancel()
 
     def checked(self, *args, timeout=10):
@@ -30,7 +38,7 @@ class BluetoothControl(MenuApp, BluetoothInternalApp):
         show = self.checked('show')
         powered = True if 'Powered: yes' in show else False if 'Powered: no' in show else None
         devices = []
-        for address, name in self._parse_device_lines(self.checked('devices')).items():
+        for address, name in list(self._parse_device_lines(self.checked('devices')).items())[:20]:
             if not re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}', address):
                 continue
             info = self.checked('info', address)
@@ -51,15 +59,25 @@ class BluetoothControl(MenuApp, BluetoothInternalApp):
             else:
                 if not address or not re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}', address):
                     raise ValueError('Invalid Bluetooth address')
-                self.checked(action, address, timeout=30)
-                if action == 'pair':
-                    self.checked('connect', address, timeout=20)
+                self.pairing_address = address if action == 'pair' else None
+                try:
+                    self.checked(action, address, timeout=30)
+                    if action == 'pair':
+                        self.checked('connect', address, timeout=20)
+                finally:
+                    self.pairing_address = None
             self.refresh()
             self.note('Bluetooth action complete; status refreshed')
         self.perform(work)
 
     def _update_pairing_state(self, payload):
         with self._lock:
+            if not self.active or not self.pairing_address:
+                self._pairing_agent.cancel()
+                return
+            self.state.pairing_active = bool(payload.get('active'))
+            self.state.pairing_message = str(payload.get('message') or '')
+            self.state.pairing_detail = str(payload.get('detail') or '')
             if payload.get('requires_confirmation'):
                 self.confirmation.ask('Confirm pairing', [str(payload.get('message', ''))[:40],
                     str(payload.get('detail', ''))[:40]], self._pairing_agent.confirm,
@@ -67,6 +85,12 @@ class BluetoothControl(MenuApp, BluetoothInternalApp):
             elif payload.get('active'):
                 self.state.status = str(payload.get('message') or 'Pairing...')
         self._mark_dirty()
+
+    def view_model(self):
+        view = MenuApp.view_model(self)
+        if self.state.pairing_active and not self.confirmation.pending:
+            view['detail_lines'] = [self.state.pairing_message, self.state.pairing_detail]
+        return view
 
     def items(self):
         radio = 'On' if self.powered is True else 'Off' if self.powered is False else 'Unavailable'

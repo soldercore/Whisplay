@@ -24,6 +24,11 @@ from whisplay_daemon import WhisplayDaemon
 
 
 class NavigationTests(unittest.TestCase):
+    def setUp(self):
+        snapshot = patch('whisplay_daemon.process_group_members', return_value={})
+        snapshot.start()
+        self.addCleanup(snapshot.stop)
+
     def daemon(self):
         d = WhisplayDaemon.__new__(WhisplayDaemon)
         d.state_lock = threading.RLock()

@@ -17,7 +17,7 @@ import time
 
 from PIL import Image, ImageDraw
 
-from daemon_shared import image_to_rgb565_bytes
+from daemon_shared import image_to_rgb565_bytes, app_display_name
 
 from . import theme
 from .draw_util import corner_brackets, dotted, draw_text, fit_text
@@ -174,7 +174,7 @@ class CyberDesktopRenderer:
         cx = theme.WIDTH // 2
         self._prompt(draw, image, cx, top + 22, "open")
         stack = fonts.prompt
-        name = fit_text(stack, app.display_name or app.app_id, 190)
+        name = fit_text(stack, app_display_name(app), 190)
         width = stack.width(name) + 4 + theme.CURSOR_W
         x = int(cx - width / 2)
         baseline = top + MID + 6
@@ -225,7 +225,7 @@ class CyberDesktopRenderer:
             if app.is_running():
                 tag_w = self._tag(draw, image, theme.CHROME_RIGHT - 2, mid, "RUN", theme.GREEN, theme.GREEN_DIM) + 6
             name_x = theme.CHROME_LEFT + 16
-            name = fit_text(fonts.body, app.display_name or app.app_id, theme.CHROME_RIGHT - 4 - tag_w - name_x)
+            name = fit_text(fonts.body, app_display_name(app), theme.CHROME_RIGHT - 4 - tag_w - name_x)
             fonts.body.draw(draw, image, name_x, y + 15, name, color)
         if total > DESKTOP_ROWS:
             self._scrollbar(draw, theme.BODY_TOP_STAGE, FOOTER_Y - 2, selected_index, total)
@@ -279,7 +279,7 @@ class CyberDesktopRenderer:
                 fill = color if i < lit else dim
                 draw.rectangle([int(end) + 6 + i * 5, y0 + 14, int(end) + 7 + i * 5, y0 + 15], fill=fill)
         app = next((a for a in apps if a.app_id == app_id), None)
-        name = (app.display_name if app is not None else "") or app_id
+        name = app_display_name(app) if app is not None else app_id
         fonts.prompt.draw(draw, image, x0 + 10, y0 + 40, fit_text(fonts.prompt, name, w - 20), theme.TEXT)
         fonts.meta.draw(draw, image, x0 + 10, y0 + 57, fit_text(fonts.meta, app_id, w - 20), theme.DIM)
 

@@ -86,8 +86,10 @@ class WifiControl(MenuApp, WifiInternalApp):
             self.note('Wi-Fi action accepted; status refreshed')
         self.perform(work)
 
-    def ask(self, title, action):
-        self.confirmation.ask(title, ['May disconnect SSH.', 'Wi-Fi can be enabled here.'], action)
+    def ask(self, title, action, target=None):
+        self.confirmation.ask(title, [target[:18], target[18:36]] if target else
+            ['May disconnect SSH.', 'Wi-Fi can be enabled here.'], action)
+        self.confirmation_target = target
 
     def select_network(self, network):
         security = network.security.upper()
@@ -96,8 +98,8 @@ class WifiControl(MenuApp, WifiInternalApp):
         elif '802.1X' in security or 'EAP' in security or 'WEP' in security:
             self.note('Use a saved profile for enterprise / WEP')
         elif security in ('', '--', 'NONE', 'OPEN'):
-            self.ask('Join ' + network.ssid, lambda: self.change('wifi-join', payload={
-                'ssid': network.ssid, 'password': '', 'security': 'open'}))
+            self.ask('Join Wi-Fi', lambda: self.change('wifi-join', payload={
+                'ssid': network.ssid, 'password': '', 'security': 'open'}), target=network.ssid)
         else:
             self.state.mode = 'input'
             self.state.password_target_ssid = network.ssid
@@ -118,10 +120,10 @@ class WifiControl(MenuApp, WifiInternalApp):
                      lambda: self.change('wifi-disconnect', self.device)))]
         for identity, name in self.saved:
             rows.append(('Saved: ' + name, 'Hold to connect', lambda identity=identity, name=name:
-                         self.ask('Connect ' + name, lambda: self.change('wifi-connect', identity))))
+                         self.ask('Connect saved Wi-Fi', lambda: self.change('wifi-connect', identity), target=identity)))
         for network in self.state.networks:
             signal = 'signal unavailable' if network.signal is None else f'{network.signal}%'
-            meta = ('Connected ' + (network.ipv4 or 'IP unavailable')) if network.active else signal + ' ' + network.security
+            meta = (signal + ' | ' + (network.ipv4 or 'IP unavailable')) if network.active else signal + ' ' + network.security
             rows.append((network.ssid, meta, lambda network=network: self.select_network(network)))
         return rows
 
@@ -163,7 +165,7 @@ class WifiControl(MenuApp, WifiInternalApp):
             return
         payload = {'ssid': ssid, 'password': password, 'security': self.join_security}
         self._cancel_password_input('Confirm join')
-        self.ask('Join ' + ssid, lambda: self.change('wifi-join', payload=payload))
+        self.ask('Join Wi-Fi', lambda: self.change('wifi-join', payload=payload), target=ssid)
 
     def handle_button(self, is_long_press):
         with self._lock:
@@ -181,6 +183,8 @@ class WifiControl(MenuApp, WifiInternalApp):
         if self.state.mode == 'input':
             if action in ('down', 'keyboard_down', 'keyboard_right'):
                 self.handle_button(False)
+            elif action in ('up', 'keyboard_up', 'keyboard_left'):
+                self.key_index = (self.key_index - 1) % len(self._password_items())
             elif action in ('submit', 'keyboard_select'):
                 self.handle_button(True)
             elif action in ('cancel', 'keyboard_cancel'):
@@ -195,7 +199,22 @@ class WifiControl(MenuApp, WifiInternalApp):
 
     def view_model(self):
         if self.state.mode != 'input':
-            return MenuApp.view_model(self)
+            view = MenuApp.view_model(self)
+            if self.confirmation.pending and getattr(self, 'confirmation_target', None):
+                view['subtitle'] = 'May disconnect SSH'
+                view['detail_compact'] = True
+            elif not self.confirmation.pending:
+                view['subtitle'] = 'Wi-Fi on' if self.radio is True else 'Wi-Fi off' if self.radio is False else 'Radio unavailable'
+                index = self.state.selected_index - 5
+                if 0 <= index < len(self.saved):
+                    identity = self.saved[index][0]
+                    view['detail_lines'] = [identity[:18], identity[18:]]
+                    view['detail_compact'] = True
+                elif 0 <= index - len(self.saved) < len(self.state.networks):
+                    ssid = self.state.networks[index - len(self.saved)].ssid
+                    view['detail_lines'] = [ssid[:18], ssid[18:]]
+                    view['detail_compact'] = True
+            return view
         with self._lock:
             return {'kind': 'list', 'title': 'Wi-Fi password', 'subtitle': self.state.password_target_ssid,
                     'items': [{'title': t, 'meta': m} for t, m, _ in self._password_items()],

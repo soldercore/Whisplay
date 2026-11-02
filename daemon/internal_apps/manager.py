@@ -6,23 +6,25 @@ import subprocess
 import threading
 import time
 
-from .bluetooth_app import BLUETOOTH_APP_ID, BluetoothInternalApp
+from .bluetooth_app import BLUETOOTH_APP_ID
 from .system_app import SYSTEM_APP_ID, SystemInternalApp
-from .volume_app import VOLUME_APP_ID, VolumeInternalApp
-from .wifi_app import WIFI_APP_ID, WifiInternalApp
+from .volume_app import VOLUME_APP_ID
+from .wifi_app import WIFI_APP_ID
 from .wifi_control import WifiControl
 from .bluetooth_control import BluetoothControl
 from .audio_control import AudioControl
 from .network_app import NetworkApp
 from .display_app import DisplayApp
 from .device_info import InformationApp
+from .services_app import ServicesApp
 
 
 class InternalAppManager:
     REFRESH_INTERVAL_SEC = 20.0
 
     def __init__(self, lock_screen=None, *, glados_status=lambda: {}, set_recording=lambda value: None,
-                 get_display=lambda: {}, set_brightness=lambda value: None, battery=lambda: None):
+                 get_display=lambda: {}, set_brightness=lambda value: None, battery=lambda: None,
+                 launch_glados=lambda: None, begin_maintenance=lambda: None, end_maintenance=lambda: None):
         self._lock = threading.RLock()
         self._dirty = False
         self._exit_requested = False
@@ -39,6 +41,8 @@ class InternalAppManager:
         self.display = DisplayApp(*args, get_display=get_display, set_brightness=set_brightness,
                                   lock_screen=lock_screen or (lambda: None))
         self.information = InformationApp(*args, battery=battery)
+        self.services = ServicesApp(*args, glados_status=glados_status, launch_glados=launch_glados,
+                                    begin_maintenance=begin_maintenance, end_maintenance=end_maintenance)
         self.system = SystemInternalApp(
             self._lock,
             self._mark_dirty,
@@ -55,6 +59,7 @@ class InternalAppManager:
             self.network.APP_ID: self.network,
             self.display.APP_ID: self.display,
             self.information.APP_ID: self.information,
+            self.services.APP_ID: self.services,
         }
 
     def start(self):
@@ -162,10 +167,11 @@ class InternalAppManager:
         with self._lock:
             thread = self._threads.get(name)
             if thread and thread.is_alive():
-                return
+                return False
             thread = threading.Thread(target=self._run_worker, args=(target,), daemon=True)
             self._threads[name] = thread
             thread.start()
+            return True
 
     def _run_worker(self, target):
         try:

@@ -69,14 +69,17 @@ class SystemInternalAppTests(unittest.TestCase):
         app.handle_button(True)
         self.assertEqual(locked, [True])
 
-    def test_reboot_runs_immediately_with_fixed_systemctl_command(self):
+    def test_reboot_requires_distinct_local_confirmation_and_uses_fixed_helper(self):
         app, calls, _locked = self.make_app()
         app.state.selected_index = 2
         app.handle_button(True)
+        self.assertEqual(calls, [])
+        self.assertEqual(app.confirmation.selected, 0)
+        app.handle_button(False)
+        app.handle_button(True)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][0][0:2], ["sudo", "-n"])
-        self.assertTrue(calls[0][0][2].endswith("systemctl"))
-        self.assertEqual(calls[0][0][3], "reboot")
+        self.assertEqual(calls[0][0], ['/usr/bin/sudo', '-n', '/usr/lib/whisplay/control-action', 'power', 'reboot'])
+        self.assertEqual(app.state.status, 'Reboot command accepted')
 
 
 class LockScreenStateTests(unittest.TestCase):

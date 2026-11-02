@@ -179,4 +179,5 @@ class MenuApp:
                     self.state.busy = False
                     self.state.last_refresh_at = time.time()
                 self._mark_dirty()
-        self._spawn_worker('menu-' + self.APP_ID, work)
+        if self._spawn_worker('menu-' + self.APP_ID, work) is False:
+            self.set_error('Previous operation finishing; retry')

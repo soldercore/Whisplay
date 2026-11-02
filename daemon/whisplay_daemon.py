@@ -20,6 +20,7 @@ if RUNTIME_DIR not in sys.path:
 
 from daemon_events import EventBroadcaster
 from daemon_models import AppRecord
+from daemon_processes import process_group_members
 from daemon_pisugar import PISUGAR3_POWER_BUTTON_POLL_INTERVAL_SEC, PiSugarManager
 from daemon_renderer import DesktopRenderer
 try:
@@ -99,7 +100,9 @@ class WhisplayDaemon:
         self.internal_apps = InternalAppManager(
             self._lock_screen, glados_status=self._glados_status, set_recording=self._set_recording,
             get_display=lambda: {'brightness': self._brightness, 'rgb': self._led_rgb},
-            set_brightness=self._set_brightness, battery=lambda: self.status_poller.battery_level)
+            set_brightness=self._set_brightness, battery=lambda: self.status_poller.battery_level,
+            launch_glados=self._launch_glados_from_services, begin_maintenance=self._begin_maintenance,
+            end_maintenance=self._end_maintenance)
         self.keyboard_reader = ExternalKeyboardReader()
         self.pisugar_home_button = self._normalize_pisugar_home_button(pisugar_home_button)
         self.autostart_app_id = str(autostart_app_id or "").strip()
@@ -330,10 +333,38 @@ class WhisplayDaemon:
     def _glados_status(self):
         app = getattr(self, 'apps', {}).get('whisplay-ai-chatbot')
         return {'running': bool(app and app.is_running()),
+                'registered': app is not None,
+                'failed': bool(app and getattr(app, 'last_error', '')),
                 'starting': getattr(self, 'pending_launch_app_id', None) == 'whisplay-ai-chatbot',
                 'stopping': 'whisplay-ai-chatbot' in getattr(self, '_app_exits', {}),
                 'recording_enabled': getattr(self, '_recording_enabled', True),
                 'config_path': os.path.join(app.cwd, '.env') if app and app.cwd else None}
+
+    def _begin_maintenance(self):
+        with self.state_lock:
+            if self._maintenance or self.pending_launch_app_id or self._app_exits or any(
+                    app.is_running() and not self.internal_apps.is_internal_app(app.app_id) for app in self.apps.values()):
+                raise RuntimeError('Wait for all apps to stop before service maintenance')
+            self._maintenance = True
+
+    def _end_maintenance(self):
+        with self.state_lock:
+            self._maintenance = False
+
+    def _launch_glados_from_services(self):
+        # Dispatched by the physical event loop, under state_lock.
+        if not self._recording_enabled:
+            self.internal_apps.services.note('Recording locked; enable in Audio')
+            return
+        app = self.apps.get('whisplay-ai-chatbot')
+        if app is None:
+            self.internal_apps.services.note('GLaDOS is not registered')
+            return
+        current = self.apps.get(self.foreground_app_id)
+        if current:
+            self._release_focus(current, 'launch_glados')
+        self.selected_app_index = next(i for i, item in enumerate(self._home_apps()) if item is app)
+        self._open_selected_app()
 
     def _set_recording(self, enabled):
         with self.state_lock:
@@ -392,17 +423,11 @@ class WhisplayDaemon:
         if self._screen_locked:
             return
         self.last_frame = None
-        running_app_id = None
-        if not self.foreground_app_id:
-            for app in self._app_list():
-                if app.is_running():
-                    running_app_id = app.app_id
-                    break
         self.desktop.render(
             self._home_apps(),
             self.selected_app_index,
             self.pending_launch_app_id,
-            running_app_id,
+            None,  # Row RUN markers suffice; a stopping app must never obscure Home.
             self.status_poller.wifi_signal_level,
             self.status_poller.battery_level,
         )
@@ -527,6 +552,7 @@ class WhisplayDaemon:
                 self._app_exits = {}
             self._app_exits[app.app_id] = {
                 "process": process, "deadline": self.exit_request["deadline"], "phase": "notify",
+                "members": process_group_members(process.pid) or {},
             }
         self.event_broadcaster.broadcast(
             "app_exit_requested",
@@ -538,9 +564,21 @@ class WhisplayDaemon:
         for app_id, pending in list(getattr(self, "_app_exits", {}).items()):
             app = self.apps.get(app_id)
             process = pending["process"]
-            if app is None or app.process is not process or process.poll() is not None:
+            if app is None or (app.process is not None and app.process is not process):
                 del self._app_exits[app_id]
                 continue
+            leader_alive = process.poll() is None
+            current = None
+            if not leader_alive:
+                current = process_group_members(process.pid)
+                if current == {} or current is not None and pending.get('members') and not any(
+                        current.get(pid) == start for pid, start in pending['members'].items()):
+                    del self._app_exits[app_id]
+                    continue
+                if current is None or not pending.get('members'):
+                    app.last_error = 'Cannot verify stopped app children; use Power if needed'
+                    pending['deadline'] = float('inf')
+                    continue  # Fail closed: do not signal an unverified process group.
             if now < pending["deadline"]:
                 continue
             if self.foreground_app_id == app_id:
@@ -550,6 +588,14 @@ class WhisplayDaemon:
                 pending["deadline"] = float("inf")
                 continue
             sig = signal.SIGTERM if pending["phase"] == "notify" else getattr(signal, "SIGKILL", signal.SIGTERM)
+            if current is None:
+                current = process_group_members(process.pid)
+            if current and pending.get('members') and not any(
+                    current.get(pid) == start for pid, start in pending['members'].items()):
+                del self._app_exits[app_id]
+                continue  # Identity changed between poll and signal; do not touch it.
+            if current:
+                pending['members'] = current
             try:
                 if hasattr(os, "killpg"):
                     os.killpg(process.pid, sig)
@@ -695,7 +741,7 @@ class WhisplayDaemon:
             raise RuntimeError('Service maintenance in progress; try again shortly')
         if app.app_id == 'whisplay-ai-chatbot' and not getattr(self, '_recording_enabled', True):
             raise RuntimeError('Recording locked; enable in Audio')
-        if any(item["process"].poll() is None for item in getattr(self, "_app_exits", {}).values()):
+        if getattr(self, '_app_exits', {}):
             raise RuntimeError("Previous app is stopping; try again shortly")
         if not app.launch_command:
             raise RuntimeError(f"app {app.app_id} has no launch command")
@@ -944,6 +990,8 @@ class WhisplayDaemon:
                 for app in self.apps.values():
                     if app.process is not None and app.process.poll() is not None:
                         rc = app.process.returncode
+                        if rc and app.app_id not in self._app_exits:
+                            app.last_error = f'App exited with status {rc}'
                         app.process = None
                         self._close_process_log(app)
                         if self.pending_launch_app_id == app.app_id:

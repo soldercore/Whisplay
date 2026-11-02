@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import test_control_navigation as navigation
 from internal_apps.manager import InternalAppManager
 from internal_apps.menu import Confirmation
 from internal_apps.wifi_control import WifiControl
@@ -16,7 +17,6 @@ from internal_apps.wifi_app import WifiNetwork
 from internal_apps.bluetooth_control import BluetoothControl
 from internal_apps.audio_control import AudioControl
 from internal_apps.device_info import linux_metrics, quantity
-import test_control_navigation as navigation
 from whisplay_daemon import WhisplayDaemon
 from daemon_models import AppRecord
 from daemon_shared import write_json_file
@@ -188,6 +188,49 @@ class SettingsTests(unittest.TestCase):
         d._on_button_released()
         self.assertEqual(d.board.backlight[-1], 40)
         self.assertIsNone(d.foreground_app_id)
+
+    def test_declined_worker_start_never_leaves_menu_busy(self):
+        app = WifiControl(*args(spawn=lambda name, work: False))
+        app.refresh_async()
+        self.assertFalse(app.state.busy)
+        self.assertIn('retry', app.state.status)
+
+    def test_recording_setting_missing_preserves_original_but_invalid_locks(self):
+        for content, enabled in [(None, True), ('not JSON', False), ('[]', False),
+                                 ('{"glados_recording_enabled":"true"}', False),
+                                 ('{"glados_recording_enabled":false}', False),
+                                 ('{"glados_recording_enabled":true}', True)]:
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as directory:
+                if content is not None:
+                    (Path(directory) / 'control-center.json').write_text(content)
+                with patch('whisplay_daemon.WhisplayBoard'), patch('whisplay_daemon.PiSugarManager'), patch(
+                        'whisplay_daemon.FallbackDesktopRenderer'), patch('whisplay_daemon.StatusPoller'), patch.object(
+                        WhisplayDaemon, '_load_apps'), patch.object(WhisplayDaemon, '_register_internal_apps'):
+                    d = WhisplayDaemon(str(Path(directory) / 'sock'), directory, str(Path(directory) / 'settings.json'))
+                self.assertEqual(d._recording_enabled, enabled)
+
+    def test_background_pairing_cannot_open_or_accept_a_confirmation(self):
+        app = BluetoothControl(*args())
+        app._pairing_agent = Mock()
+        app._update_pairing_state({'active': True, 'requires_confirmation': True, 'detail': '123456'})
+        self.assertIsNone(app.confirmation.pending)
+        app._pairing_agent.cancel.assert_called_once()
+        app.activate()
+        app.pairing_address = 'AA:BB:CC:DD:EE:FF'
+        app._update_pairing_state({'active': True, 'requires_confirmation': True, 'detail': '123456'})
+        self.assertEqual(app.confirmation.selected, 0)
+        app.handle_button(True)
+        app._pairing_agent.confirm.assert_not_called()
+        self.assertEqual(app._pairing_agent.cancel.call_count, 2)
+
+    def test_stopping_app_never_covers_home_controls_with_running_modal(self):
+        d = navigation.NavigationTests().daemon()
+        d.foreground_app_id = None
+        d.apps['chat'].process = Mock(poll=Mock(return_value=None))
+        d.desktop = Mock()
+        d.status_poller = SimpleNamespace(wifi_signal_level=None, battery_level=None)
+        WhisplayDaemon._render_desktop(d)
+        self.assertIsNone(d.desktop.render.call_args.args[3])
 
 
 if __name__ == '__main__':

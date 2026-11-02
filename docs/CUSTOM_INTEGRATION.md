@@ -4,6 +4,11 @@ Reference: `cyber-terminal-menu` at `53a9d6e237d8612b15374d0ec74191d52ea9495f`, 
 
 Actual test results and unverified builds/hardware are recorded in [VALIDATION.md](VALIDATION.md).
 
+The later, isolated control-center candidate based on installed revision `5533f54`
+is documented in [CONTROL_CENTER.md](CONTROL_CENTER.md). It extends the daemon's
+built-in menus without changing drivers or chatbot code. Its Pi checks use a
+fake board and read-only status probes; physical controls remain unverified.
+
 This isolated development branch preserves the three custom launcher commits, font licences/vendoring provenance, palette/safe area, desktop/internal screens and permanent classic fallback. It includes the complete official v3.2.7 history: autostart, Joy input/Wi-Fi keyboard, platform/audio work, MP4 cleanup and image overlay fix. No driver, service or production image has been installed.
 
 ## Renderer conflict resolution

@@ -5,7 +5,7 @@ import time
 
 from PIL import Image, ImageDraw, ImageFont
 
-from daemon_shared import SCREEN_HEIGHT, SCREEN_WIDTH, calculate_luminance, image_to_rgb565_bytes
+from daemon_shared import SCREEN_HEIGHT, SCREEN_WIDTH, calculate_luminance, image_to_rgb565_bytes, app_display_name
 
 
 STATUS_ICON_HEIGHT = 15
@@ -14,6 +14,18 @@ LIST_ITEM_ROW_HEIGHT = 40
 LIST_ITEM_META_OFFSET = 20
 LIST_VISIBLE_COUNT = 3
 WIFI_ICON_SCALE = 1.6
+
+
+def _fit_text(font, text, width):
+    """Keep dynamic control-center labels inside the existing classic cards."""
+    text = str(text)
+    if font.getlength(text) <= width:
+        return text
+    while text and font.getlength(text + '...') > width:
+        text = text[:-1]
+    return text + '...'
+
+
 WIFI_LEVEL_ICON_FILES = {
     1: "wifi-weak.png",
     2: "wifi-medium.png",
@@ -375,7 +387,7 @@ class DesktopRenderer:
         if getattr(selected, "last_error", ""):
             status = selected.last_error[:28]
         selected_color = (120, 255, 140) if pending_app_id == selected.app_id else (80, 160, 255)
-        draw.text((left, top_margin + 46), selected.display_name, fill=selected_color, font=self.body_font)
+        draw.text((left, top_margin + 46), app_display_name(selected), fill=selected_color, font=self.body_font)
         draw.text((left, top_margin + 68), f"State: {status}", fill=(170, 220, 170), font=self.small_font)
 
         y = top_margin + 112
@@ -398,7 +410,7 @@ class DesktopRenderer:
                 item_color = (100, 110, 130)
             if idx == selected_index:
                 draw.text((arrow_x, y), ">", fill=item_color, font=font)
-            draw.text((text_x, y), app.display_name, fill=item_color, font=font)
+            draw.text((text_x, y), app_display_name(app), fill=item_color, font=font)
             y += 22
 
         modal_app_id = pending_app_id or running_app_id
@@ -467,13 +479,14 @@ class DesktopRenderer:
             )
         busy = bool(view_model.get("busy"))
         detail_lines = list(view_model.get("detail_lines") or [])
+        detail_font = self.micro_font if view_model.get('detail_compact') else self.small_font
 
         left = 14
         top = 10
-        draw.text((left, top), title, fill=(255, 255, 255), font=self.title_font)
+        draw.text((left, top), _fit_text(self.title_font, title, SCREEN_WIDTH - 2*left), fill=(255, 255, 255), font=self.title_font)
         self._draw_internal_legend(draw, left, top + 24)
         if subtitle:
-            draw.text((left, top + 42), subtitle[:30], fill=(126, 162, 200), font=self.small_font)
+            draw.text((left, top + 42), _fit_text(self.small_font, subtitle, SCREEN_WIDTH - 2*left), fill=(126, 162, 200), font=self.small_font)
 
         card_y = 68
         card_h = LIST_VISIBLE_COUNT * LIST_ITEM_ROW_HEIGHT + 16
@@ -506,11 +519,11 @@ class DesktopRenderer:
                     color = (106, 118, 138)
                     meta_color = (82, 92, 108)
                     font = self.small_font
-                draw.text((left + 18, y), item_title[:22], fill=color, font=font)
+                draw.text((left + 18, y), _fit_text(font, item_title, SCREEN_WIDTH - 2*left - 18), fill=color, font=font)
                 if item_meta:
                     draw.text(
                         (left + 18, y + LIST_ITEM_META_OFFSET),
-                        item_meta[:34],
+                        _fit_text(self.small_font, item_meta, SCREEN_WIDTH - 2*left - 18),
                         fill=meta_color,
                         font=self.small_font,
                     )
@@ -521,11 +534,11 @@ class DesktopRenderer:
         status_fill = (255, 218, 96) if busy else (156, 214, 255)
         draw.text((left, status_y + 6), "Status", fill=(255, 255, 255), font=self.small_font)
         if detail_lines:
-            draw.text((left, status_y + 18), detail_lines[0][:30], fill=status_fill, font=self.small_font)
+            draw.text((left, status_y + 18), _fit_text(detail_font, detail_lines[0], SCREEN_WIDTH - 2*left), fill=status_fill, font=detail_font)
             if len(detail_lines) > 1:
-                draw.text((left, status_y + 30), detail_lines[1][:30], fill=(190, 220, 255), font=self.small_font)
+                draw.text((left, status_y + 30), _fit_text(detail_font, detail_lines[1], SCREEN_WIDTH - 2*left), fill=(190, 220, 255), font=detail_font)
         else:
-            draw.text((left, status_y + 20), status[:30], fill=status_fill, font=self.small_font)
+            draw.text((left, status_y + 20), _fit_text(self.small_font, status, SCREEN_WIDTH - 2*left), fill=status_fill, font=self.small_font)
         frame = image_to_rgb565_bytes(image)
         self.board.draw_image(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, frame)
 

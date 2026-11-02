@@ -38,6 +38,11 @@ WHISPLAY_JOY_MODEL = "whisplay-joy"
 VALID_MODELS = {DEFAULT_MODEL, WHISPLAY_JOY_MODEL}
 
 
+def app_display_name(app):
+    # UI alias only: the registered command, metadata and IPC record stay intact.
+    return 'GLaDOS' if app.app_id == 'whisplay-ai-chatbot' else (app.display_name or app.app_id)
+
+
 def load_json_file(path: str) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as fp:
