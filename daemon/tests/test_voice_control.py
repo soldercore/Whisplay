@@ -148,4 +148,200 @@ class VoiceControlTests(unittest.TestCase):
                 with self.assertRaises(PermissionError):api._authorize(connection,True)
 
 
+
+    def supported_api(self):
+        api, d = self.setup_api()
+        api.capabilities = lambda: {'actions': {a: {'supported': True} for a in __import__('control_api').ACTIONS}}
+        return api, d
+
+    def finish_handoff(self, api, d, result):
+        with patch('whisplay_daemon.process_group_members', return_value={}):
+            api.handle('control.present', {'ticket': result['ticket']}, None)
+        d.apps[APP].process = None
+        d.foreground_app_id = None
+        d._app_exits.clear()
+        api.advance()
+
+    def test_home_waits_for_owned_cleanup_and_never_requests_pi_power(self):
+        api, d = self.setup_api()
+        d._lock_screen = Mock()
+        d.internal_apps.system.ask_power = Mock()
+        result = api.execute({'action': 'home'})
+        with patch('whisplay_daemon.process_group_members', return_value={}):
+            api.handle('control.present', {'ticket': result['ticket']}, None)
+        d.apps[APP].process = None
+        d.foreground_app_id = None
+        api.advance()
+        self.assertIsNotNone(api.pending, 'owned process exit must finish first')
+        d._app_exits.clear()
+        api.advance()
+        self.assertIsNone(api.pending)
+        self.assertIsNone(d.foreground_app_id)
+        d.internal_apps.system.ask_power.assert_not_called()
+        d._lock_screen.assert_not_called()
+        self.assertTrue(d._recording_enabled)
+
+    def test_user_brightness_survives_chatbot_updates_and_can_be_raised_again(self):
+        from whisplay_daemon import WhisplayDaemon
+        api, d = self.supported_api()
+        d.board.set_backlight = Mock()
+        d.internal_apps.display.set_brightness = d._set_user_brightness
+        result = api.execute({'action':'brightness','change':-10})
+        self.assertEqual(result['actual'],70)
+        d._set_brightness(100)  # Existing GLaDOS thinking/answer updates.
+        self.assertEqual(d._brightness,70)
+        d._set_brightness(0)
+        self.assertEqual(d._brightness,0)
+        d._set_brightness(100)
+        self.assertEqual(d._brightness,70)
+        d._set_user_brightness(90)
+        self.assertEqual(d._brightness,90)
+        self.assertEqual(api.read('display')['brightness_limit_percent'],90)
+
+    def test_mute_and_restore_reuse_actual_audio_state(self):
+        api, d = self.supported_api()
+        app = d.internal_apps.volume
+        current = [73]
+        def refresh():
+            app.state.current_percent = current[0]
+            if current[0]: app.restore_volume = current[0]
+        def apply(target):
+            current[0] = target
+            refresh()
+            return target
+        app.refresh = Mock(side_effect=refresh)
+        app.apply_volume = Mock(side_effect=apply)
+        self.assertTrue(api.execute({'action':'mute','enabled':True})['enabled'])
+        self.assertEqual(current[0],0)
+        self.assertFalse(api.execute({'action':'mute','enabled':False})['enabled'])
+        self.assertEqual(current[0],73)
+        self.assertEqual([c.args for c in app.apply_volume.call_args_list],[(0,),(73,)])
+        self.assertEqual(d.foreground_app_id,APP)
+        self.assertIsNone(api.pending)
+
+    def test_radio_enable_stays_in_glados_and_requires_actual_readback(self):
+        for action in ('wifi','bluetooth'):
+            with self.subTest(action=action):
+                api,d=self.supported_api()
+                target=getattr(d.internal_apps,action)
+                attr='radio' if action=='wifi' else 'powered'
+                setattr(target,attr,False)
+                target.apply_change=Mock(side_effect=lambda *a,**k:setattr(target,attr,True))
+                self.assertTrue(api.execute({'action':action,'enabled':True})['enabled'])
+                self.assertEqual(d.foreground_app_id,APP)
+                self.assertIsNone(api.pending)
+                setattr(target,attr,False)
+                target.apply_change=Mock()
+                with self.assertRaisesRegex(RuntimeError,'not confirmed'):
+                    api.execute({'action':action,'enabled':True})
+                target.state.busy=True
+                with self.assertRaisesRegex(RuntimeError,'in progress'):
+                    api.execute({'action':action,'enabled':True})
+
+    def test_bluetooth_disconnect_captures_discovered_target_and_cancel_is_first(self):
+        from internal_apps.bluetooth_app import BluetoothDevice
+        api,d=self.supported_api()
+        bt=d.internal_apps.bluetooth
+        bt.refresh=Mock()
+        bt.change=Mock()
+        address='AA:BB:CC:DD:EE:FF'
+        bt.state.devices=[BluetoothDevice(address,'Lab headphones',None,True,True,False)]
+        result=api.execute({'action':'bluetooth_device','operation':'disconnect','device':'Lab headphones'})
+        bt.state.devices=[]  # UI refresh must not retarget the request.
+        self.finish_handoff(api,d,result)
+        self.assertEqual(bt.confirmation.selected,0)
+        bt.handle_button(True)
+        bt.change.assert_not_called()
+        self.assertIsNone(bt.confirmation.pending)
+
+    def test_bluetooth_pair_requires_button_and_ambiguous_targets_fail_closed(self):
+        from internal_apps.bluetooth_app import BluetoothDevice
+        api,d=self.supported_api()
+        bt=d.internal_apps.bluetooth
+        bt.refresh=Mock()
+        bt.change=Mock()
+        a='AA:BB:CC:DD:EE:FF'
+        bt.state.devices=[BluetoothDevice(a,'Lab speaker',None,False,False,False)]
+        result=api.execute({'action':'bluetooth_device','operation':'pair','device':'Lab speaker'})
+        bt.change.assert_not_called()
+        self.finish_handoff(api,d,result)
+        bt.handle_button(False)
+        bt.change.assert_not_called()
+        bt.handle_button(True)
+        bt.change.assert_called_once_with('pair',a)
+        api,d=self.supported_api();bt=d.internal_apps.bluetooth;bt.refresh=Mock()
+        bt.state.devices=[BluetoothDevice(a,'Same',None,False,False,False),BluetoothDevice('AA:BB:CC:DD:EE:00','Same',None,False,False,False)]
+        for name in ('Same','Unknown','AA:BB;id'):
+            with self.assertRaises(ValueError):
+                api.execute({'action':'bluetooth_device','operation':'connect','device':name})
+        self.assertIsNone(api.pending)
+
+    def test_wifi_join_uses_snapshot_and_local_masked_input_never_voice_password(self):
+        from internal_apps.wifi_app import WifiNetwork
+        api,d=self.supported_api();wifi=d.internal_apps.wifi
+        wifi.refresh=Mock();wifi.change=Mock()
+        wifi.state.networks=[WifiNetwork('Synthetic Lab',80,'WPA2')]
+        result=api.execute({'action':'wifi_join','network':'Synthetic Lab'})
+        wifi.state.networks=[]
+        self.finish_handoff(api,d,result)
+        self.assertEqual(wifi.state.mode,'input')
+        self.assertEqual(wifi.key_index,0,'Cancel password entry is first')
+        self.assertEqual(wifi.state.password_buffer,'')
+        wifi.change.assert_not_called()
+        wifi.handle_button(True)
+        wifi.change.assert_not_called()
+        self.assertNotEqual(wifi.state.mode,'input')
+
+    def test_wifi_profile_disconnect_captured_before_confirmation(self):
+        api,d=self.supported_api();wifi=d.internal_apps.wifi
+        wifi.refresh=Mock();wifi.change=Mock();wifi.device='wlan0'
+        result=api.execute({'action':'wifi_profile','operation':'disconnect'})
+        self.finish_handoff(api,d,result)
+        wifi.device='wlan999'
+        self.assertEqual(wifi.confirmation.selected,0)
+        wifi.handle_button(False);wifi.handle_button(True)
+        wifi.change.assert_called_once_with('wifi-disconnect','wlan0')
+
+    def test_new_operation_parameters_reject_credentials_shells_and_coercion(self):
+        api,d=self.supported_api()
+        for p in [{'action':'mute','enabled':1},{'action':'wifi_join','network':'Lab','password':'DoNotLogThis'},
+                  {'action':'bluetooth_device','device':'Lab','operation':'trust'},
+                  {'action':'wifi_profile','operation':'disconnect','profile':'ignored'},
+                  {'action':'wifi_scan','command':'id'},{'action':'bluetooth_scan','enabled':True}]:
+            with self.subTest(action=p['action']),self.assertRaises(ValueError):api.execute(p)
+        self.assertIsNone(api.pending)
+
+    def test_read_scopes_and_scans_reuse_existing_operations(self):
+        api,d=self.supported_api();wifi=d.internal_apps.wifi;bt=d.internal_apps.bluetooth
+        wifi.refresh=Mock();wifi.scan=Mock();wifi.state.networks=[];wifi.saved=[]
+        bt.refresh=Mock();bt.apply_change=Mock();bt.state.devices=[]
+        self.assertIn('wifi',api.read('wifi'))
+        bt.refresh.assert_not_called()
+        self.assertIn('bluetooth',api.read('bluetooth'))
+        self.assertEqual(wifi.refresh.call_count,1)
+        self.assertEqual(api.execute({'action':'wifi_scan'})['status'],'completed')
+        wifi.scan.assert_called_once_with()
+        self.assertEqual(api.execute({'action':'bluetooth_scan'})['status'],'completed')
+        bt.apply_change.assert_called_once_with('scan')
+
+    def test_partial_bluetooth_read_does_not_invent_pairing_details(self):
+        api,d=self.supported_api();bt=d.internal_apps.bluetooth
+        def checked(*args,**kwargs):
+            if args[0]=='show':return 'Powered: yes'
+            if args[0]=='devices':return 'Device AA:BB:CC:DD:EE:FF Synthetic'
+            raise RuntimeError('no info')
+        bt.checked=Mock(side_effect=checked)
+        bt.refresh(budget_seconds=8)
+        self.assertTrue(bt.powered)
+        self.assertFalse(bt.details_complete)
+        self.assertEqual(bt.state.devices,[])
+
+    def test_already_enabled_recording_never_exits_or_starts_capture(self):
+        api,d=self.supported_api()
+        r=api.execute({'action':'recording','enabled':True})
+        self.assertEqual(r['status'],'completed')
+        self.assertFalse(r['changed'])
+        self.assertEqual(d.foreground_app_id,APP)
+        self.assertIsNone(api.pending)
+
 if __name__=='__main__':unittest.main()

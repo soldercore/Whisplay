@@ -87,6 +87,7 @@ class WhisplayDaemon:
         self.pisugar = PiSugarManager()
         self.status_poller = StatusPoller(self.pisugar)
         self._brightness = 100
+        self._user_brightness = 100
         self._led_rgb = (0, 0, 0)
         self._maintenance = False
         self._recording_path = os.path.join(os.path.dirname(self.settings_path), 'control-center.json')
@@ -101,7 +102,7 @@ class WhisplayDaemon:
         self.internal_apps = InternalAppManager(
             self._lock_screen, glados_status=self._glados_status, set_recording=self._set_recording,
             get_display=lambda: {'brightness': self._brightness, 'rgb': self._led_rgb},
-            set_brightness=self._set_brightness, battery=lambda: self.status_poller.battery_level,
+            set_brightness=self._set_user_brightness, battery=lambda: self.status_poller.battery_level,
             launch_glados=self._launch_glados_from_services, begin_maintenance=self._begin_maintenance,
             end_maintenance=self._end_maintenance)
         self.keyboard_reader = ExternalKeyboardReader()
@@ -378,9 +379,13 @@ class WhisplayDaemon:
             self._recording_enabled = bool(enabled)
 
     def _set_brightness(self, value):
-        value = max(0, min(100, int(value)))
+        value = max(0, min(getattr(self, '_user_brightness', 100), int(value)))
         self.board.set_backlight(value)
         self._brightness = value
+
+    def _set_user_brightness(self, value):
+        self._user_brightness = max(20, min(100, int(value)))
+        self._set_brightness(self._user_brightness)
 
     def _set_rgb(self, r, g, b):
         self.board.set_rgb(r, g, b)
@@ -1128,6 +1133,7 @@ class WhisplayDaemon:
                     "payload": {
                         "service": "whisplay-daemon",
                         "control_api": 1,
+                        "voice_control_revision": 2,
                         "screen": {
                             "width": SCREEN_WIDTH,
                             "height": SCREEN_HEIGHT,

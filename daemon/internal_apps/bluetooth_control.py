@@ -1,4 +1,5 @@
 import re
+import time
 
 from .menu import MenuApp
 from .bluetooth_app import BluetoothInternalApp, BluetoothViewState, BluetoothDevice
@@ -34,14 +35,29 @@ class BluetoothControl(MenuApp, BluetoothInternalApp):
             raise RuntimeError('Bluetooth operation failed / unavailable')
         return output
 
-    def refresh(self):
-        show = self.checked('show')
+    def refresh(self, include_devices=True, budget_seconds=None):
+        deadline = time.monotonic() + budget_seconds if budget_seconds else None
+        show = self.checked('show', timeout=2 if deadline else 10)
         powered = True if 'Powered: yes' in show else False if 'Powered: no' in show else None
+        if not include_devices:
+            with self._lock:
+                self.powered = powered
+            return
         devices = []
-        for address, name in list(self._parse_device_lines(self.checked('devices')).items())[:20]:
+        self.details_complete = True
+        for address, name in list(self._parse_device_lines(self.checked('devices', timeout=2 if deadline else 10)).items())[:20]:
+            if deadline and time.monotonic() >= deadline:
+                self.details_complete = False
+                break
             if not re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}', address):
                 continue
-            info = self.checked('info', address)
+            try:
+                info = self.checked('info', address, timeout=max(.1, min(2, deadline-time.monotonic())) if deadline else 10)
+            except Exception:
+                if not deadline:
+                    raise
+                self.details_complete = False
+                continue
             clean = self._resolve_name(address, name, info, {}) or address
             signal = self._parse_signal(info) if 'RSSI:' in info else None
             devices.append(BluetoothDevice(address, clean, signal, 'Paired: yes' in info,
@@ -51,6 +67,9 @@ class BluetoothControl(MenuApp, BluetoothInternalApp):
         self.note('Radio on' if powered else 'Radio off' if powered is False else 'Radio unavailable')
 
     def change(self, action, address=None, enabled=None):
+        self.perform(lambda: self.apply_change(action, address, enabled))
+
+    def apply_change(self, action, address=None, enabled=None, include_devices=True):
         def work():
             if action == 'power':
                 desired = not self.powered if enabled is None else enabled
@@ -67,9 +86,9 @@ class BluetoothControl(MenuApp, BluetoothInternalApp):
                         self.checked('connect', address, timeout=20)
                 finally:
                     self.pairing_address = None
-            self.refresh()
+            self.refresh(include_devices=include_devices, budget_seconds=8 if not self.active else None)
             self.note('Bluetooth action complete; status refreshed')
-        self.perform(work)
+        return work()
 
     def _update_pairing_state(self, payload):
         with self._lock:

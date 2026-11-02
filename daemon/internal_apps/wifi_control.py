@@ -77,14 +77,15 @@ class WifiControl(MenuApp, WifiInternalApp):
         self.refresh()
 
     def change(self, *args, payload=None):
-        def work():
-            try:
-                control(self._run_command, *args, payload=payload)
-            except Exception:
-                raise RuntimeError('Wi-Fi action failed; check permissions / credentials') from None
-            self.refresh()
-            self.note('Wi-Fi action accepted; status refreshed')
-        self.perform(work)
+        self.perform(lambda: self.apply_change(*args, payload=payload))
+
+    def apply_change(self, *args, payload=None):
+        try:
+            control(self._run_command, *args, payload=payload)
+        except Exception:
+            raise RuntimeError('Wi-Fi action failed; check permissions / credentials') from None
+        self.refresh()
+        self.note('Wi-Fi action accepted; status refreshed')
 
     def ask(self, title, action, target=None):
         self.confirmation.ask(title, [target[:18], target[18:36]] if target else

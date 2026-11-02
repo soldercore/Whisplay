@@ -70,6 +70,10 @@ class AudioControl(MenuApp, VolumeInternalApp):
             ['Stops / blocks GLaDOS launch.', 'Other programs are unaffected.'],
             lambda: self.perform(lambda: self._recording(enabled)))
 
+    def apply_mute(self, enabled):
+        self.refresh()
+        return self.apply_volume(0 if enabled else self.restore_volume)
+
     def _recording(self, enabled):
         self.set_recording(enabled)
         self.note('GLaDOS recording enabled' if enabled else 'GLaDOS recording locked; other apps unaffected')
@@ -82,7 +86,7 @@ class AudioControl(MenuApp, VolumeInternalApp):
                 ('Refresh status', 'Read audio controls', self.refresh_async),
                 ('Volume +10%', 'Current ' + volume, lambda: self.volume(min(100, self.state.current_percent + 10))),
                 ('Volume -10%', 'Current ' + volume, lambda: self.volume(max(0, self.state.current_percent - 10))),
-                ('Mute / restore', 'Current ' + volume, lambda: self.volume(0 if self.state.current_percent else self.restore_volume)),
+                ('Mute / restore', 'Current ' + volume, lambda: self.perform(lambda: self.apply_mute(self.state.current_percent > 0))),
                 ('GLaDOS recording', 'Enabled' if enabled else 'Locked', self.toggle_recording),
                 ('Microphone gain', 'Unavailable' if self.mic is None else f'{self.mic} (not a mute switch)',
                  lambda: self.note('Recording lock affects GLaDOS only; gain is never changed')),

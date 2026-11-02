@@ -1,6 +1,7 @@
 """Voice bridge to existing built-ins. No model text becomes a command or path."""
 from dataclasses import asdict
 import os
+import re
 from pathlib import Path
 import shutil
 import socket
@@ -12,10 +13,12 @@ import time
 import uuid
 
 from internal_apps.control_client import HELPER
+from internal_apps.wifi_app import WifiNetwork
 
 APP = 'whisplay-ai-chatbot'
-READS = {'capabilities', 'apps', 'display', 'audio', 'network', 'services'}
-ACTIONS = {'brightness', 'volume', 'home', 'lock', 'recording', 'wifi', 'bluetooth', 'service', 'reboot', 'shutdown'}
+READS = {'capabilities', 'apps', 'display', 'audio', 'network', 'wifi', 'bluetooth', 'services'}
+ACTIONS = {'brightness', 'volume', 'mute', 'home', 'lock', 'recording', 'wifi', 'wifi_scan', 'wifi_profile', 'wifi_join',
+           'bluetooth', 'bluetooth_scan', 'bluetooth_device', 'service', 'reboot', 'shutdown'}
 SERVICES = {'ssh', 'ollama', 'whisper', 'piper'}
 
 
@@ -63,18 +66,27 @@ class ControlAPI:
             **({'reason': reason} if not supported else {})}
         privileged = lambda condition=True: feature(condition and helper and self.confirmations, True,
             'Fixed privilege helper or local confirmation support unavailable')
-        return {'api': 1, 'push_to_talk': True, 'continuous_capture_added': False,
+        return {'api': 1, 'voice_control_revision': 2, 'push_to_talk': True, 'continuous_capture_added': False,
                 'actions': {'brightness': feature(True), 'volume': feature(audio, reason='Supported sound card unavailable'),
+                    'mute': feature(audio, reason='Supported sound card unavailable'),
                     'home': feature(self.confirmations, reason='Speech handoff unavailable'),
                     'lock': feature(self.confirmations, reason='Speech handoff unavailable'),
                     'recording': feature(APP in self.daemon.apps and self.confirmations, True, 'GLaDOS not registered / handoff unavailable'),
-                    'wifi': privileged(nm), 'bluetooth': feature(bt and self.confirmations, True, 'BlueZ / confirmation unavailable'),
+                    'wifi': {**privileged(nm), 'immediate_enable': True},
+                    'wifi_scan': feature(nm, reason='NetworkManager unavailable'),
+                    'wifi_profile': privileged(nm), 'wifi_join': privileged(nm),
+                    'bluetooth': {**feature(bt and self.confirmations, True, 'BlueZ / confirmation unavailable'), 'immediate_enable': True},
+                    'bluetooth_scan': feature(bt, reason='BlueZ controller unavailable'),
+                    'bluetooth_device': feature(bt and self.confirmations, True, 'BlueZ / confirmation unavailable'),
                     'service': privileged(bool(shutil.which('systemctl'))), 'reboot': privileged(), 'shutdown': privileged()},
                 'readable': ['capabilities', 'apps', 'display'] + (['audio'] if audio else []) +
-                    (['network'] if nm or bt else []) + (['services'] if shutil.which('systemctl') else []),
+                    (['network'] if nm or bt else []) + (['wifi'] if nm else []) + (['bluetooth'] if bt else []) +
+                    (['services'] if shutil.which('systemctl') else []),
                 'notes': ['Recording lock affects GLaDOS only, not other programs or hardware microphone gain.',
                           'Services report systemd/process state, not remote connectivity or backend readiness.',
                           'CPU/RAM/temperature/storage are supplied by the existing getSystemHealth tool.',
+                          'Wi-Fi passwords are entered only on the local Network screen, never through voice tools.',
+                          'Bluetooth device actions require a uniquely discovered device and local confirmation.',
                           'Radio authorization is checked by the existing operations; no hardware power-on is promised.']}
 
     def read(self, scope):
@@ -86,21 +98,29 @@ class ControlAPI:
                 return {'apps': d._list_apps_payload()}
         if scope == 'display':
             return {'brightness_percent': d._brightness, 'rgb_command': d._led_rgb,
+                    'brightness_limit_percent': getattr(d, '_user_brightness', 100),
                     'screen_locked': d._screen_locked, 'measurement': 'last_commanded_not_sensor'}
         if scope == 'audio':
             m.volume.refresh()
             return {'speaker_percent': m.volume.state.current_percent, 'mic_gain': m.volume.mic,
                     'glados_recording_enabled': d._recording_enabled, 'input_mode': m.volume.ptt,
                     'sound_card': m.volume.state.card, 'hardware_mic_mute': False}
-        if scope == 'network':
+        if scope in ('network', 'wifi', 'bluetooth'):
             result = {}
-            for name in ('wifi', 'bluetooth'):
+            for name in (('wifi', 'bluetooth') if scope == 'network' else (scope,)):
                 app = getattr(m, name)
                 try:
-                    app.refresh()
+                    if name == 'bluetooth':
+                        app.refresh(budget_seconds=8)
+                    else:
+                        app.refresh()
                     result[name] = ({'enabled': app.radio, 'device': app.device,
                         'connected': [asdict(n) for n in app.state.networks if n.active]} if name == 'wifi' else
-                        {'enabled': app.powered, 'devices': [asdict(n) for n in app.state.devices]})
+                        {'enabled': app.powered, 'devices': [asdict(n) for n in app.state.devices],
+                         'details_complete': getattr(app, 'details_complete', True)})
+                    if name == 'wifi':
+                        result[name]['saved_profiles'] = [{'id': identity, 'name': label} for identity, label in app.saved]
+                        result[name]['networks'] = [asdict(n) for n in app.state.networks]
                 except Exception:
                     result[name] = {'available': False}
             return result
@@ -111,7 +131,7 @@ class ControlAPI:
         raise ValueError('Unsupported read scope')
 
     def normalize(self, payload):
-        if not isinstance(payload, dict) or set(payload) - {'action', 'level', 'change', 'enabled', 'service', 'operation'}:
+        if not isinstance(payload, dict) or set(payload) - {'action', 'level', 'change', 'enabled', 'service', 'operation', 'device', 'profile', 'network'}:
             raise ValueError('Unsupported action parameters')
         p = dict(payload)
         action = p.get('action')
@@ -127,7 +147,7 @@ class ControlAPI:
             if type(p[key]) is not int or not lower <= p[key] <= upper:
                 raise ValueError('Invalid level/change')
             permitted.add(key)
-        elif action in ('recording', 'wifi', 'bluetooth'):
+        elif action in ('mute', 'recording', 'wifi', 'bluetooth'):
             if type(p.get('enabled')) is not bool:
                 raise ValueError('Boolean enabled required')
             permitted.add('enabled')
@@ -135,15 +155,90 @@ class ControlAPI:
             if p.get('service') not in SERVICES or p.get('operation') not in ('start', 'restart'):
                 raise ValueError('Unsupported service operation')
             permitted.update(('service', 'operation'))
+        elif action == 'bluetooth_device':
+            if p.get('operation') not in ('connect', 'disconnect', 'pair', 'forget'):
+                raise ValueError('Unsupported Bluetooth device operation')
+            permitted.update(('operation', 'device'))
+        elif action == 'wifi_profile':
+            if p.get('operation') not in ('connect', 'disconnect'):
+                raise ValueError('Unsupported Wi-Fi profile operation')
+            permitted.add('operation')
+            if p['operation'] == 'connect':
+                permitted.add('profile')
+        elif action == 'wifi_join':
+            permitted.add('network')
+        for key in ('device', 'profile', 'network'):
+            if key in permitted and (not isinstance(p.get(key), str) or not 1 <= len(p[key]) <= 128
+                                     or any(ord(c) < 32 for c in p[key])):
+                raise ValueError('Valid discovered target required')
         if set(p) != permitted:
             raise ValueError('Unexpected or missing action parameters')
-        if not self.capabilities()['actions'][action]['supported']:
-            raise RuntimeError(self.capabilities()['actions'][action].get('reason') or 'Action unavailable')
+        feature = self.capabilities()['actions'][action]
+        if not feature['supported']:
+            raise RuntimeError(feature.get('reason') or 'Action unavailable')
+        m = self.daemon.internal_apps
+        if action == 'bluetooth_device':
+            m.bluetooth.refresh(budget_seconds=8)
+            matches = [n for n in m.bluetooth.state.devices if p['device'].casefold() in (n.address.casefold(), n.name.casefold())]
+            if len(matches) != 1 or not re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}', matches[0].address):
+                raise ValueError('Bluetooth target unavailable or ambiguous; read Bluetooth status first')
+            p['address'] = matches[0].address
+            p['device'] = matches[0].name
+        elif action in ('wifi_profile', 'wifi_join'):
+            m.wifi.refresh()
+            if action == 'wifi_join':
+                matches = [n for n in m.wifi.state.networks if n.ssid == p['network']]
+                if len(matches) != 1:
+                    raise ValueError('Wi-Fi network unavailable or ambiguous; scan first')
+                p['network_snapshot'] = asdict(matches[0])
+            elif p['operation'] == 'connect':
+                matches = [identity for identity, name in m.wifi.saved if p['profile'] in (identity, name)]
+                if len(matches) != 1:
+                    raise ValueError('Saved Wi-Fi profile unavailable or ambiguous')
+                p['profile_id'] = matches[0]
+            else:
+                if not re.fullmatch(r'[A-Za-z0-9_.-]{1,32}', m.wifi.device):
+                    raise ValueError('Wi-Fi device unavailable')
+                p['interface'] = m.wifi.device
         return p
 
     def execute(self, payload):
         p = self.normalize(payload)
         d, m, action = self.daemon, self.daemon.internal_apps, p['action']
+        if action == 'mute':
+            if m.volume.state.busy:
+                raise RuntimeError('Audio operation already in progress')
+            actual = m.volume.apply_mute(p['enabled'])
+            return {'status': 'completed', 'action': action, 'enabled': actual == 0, 'requested_enabled': p['enabled'],
+                    'actual': actual, 'unit': '%', 'verification': 'mixer_readback'}
+        if action == 'wifi_scan':
+            if m.wifi.state.busy:
+                raise RuntimeError('Wi-Fi operation already in progress')
+            m.wifi.scan()
+            return {'status': 'completed', 'action': action, 'networks': [asdict(n) for n in m.wifi.state.networks]}
+        if action == 'bluetooth_scan':
+            if m.bluetooth.state.busy:
+                raise RuntimeError('Bluetooth operation already in progress')
+            m.bluetooth.apply_change('scan')
+            return {'status': 'completed', 'action': action, 'devices': [asdict(n) for n in m.bluetooth.state.devices]}
+        if action in ('wifi', 'bluetooth') and p['enabled']:
+            target = getattr(m, action)
+            if target.state.busy:
+                raise RuntimeError('Radio operation already in progress')
+            if action == 'wifi':
+                target.apply_change('wifi-radio', 'on')
+                actual = target.radio
+            else:
+                target.apply_change('power', enabled=True, include_devices=False)
+                actual = target.powered
+            if actual is not True:
+                raise RuntimeError('Radio enable was not confirmed by actual status')
+            return {'status': 'completed', 'action': action, 'enabled': True, 'verification': 'radio_readback'}
+        if action == 'recording' and p['enabled'] and d._recording_enabled:
+            return {'status': 'completed', 'action': action, 'enabled': True, 'changed': False, 'verification': 'daemon_state'}
+        if action == 'wifi_join' and p['network_snapshot']['active']:
+            return {'status': 'completed', 'action': action, 'already_connected': True,
+                    'network': p['network_snapshot']['ssid'], 'verification': 'NetworkManager_status'}
         if action in ('volume', 'brightness'):
             if action == 'volume':
                 if m.volume.state.busy:
@@ -235,13 +330,24 @@ class ControlAPI:
             if action == 'lock':
                 d._lock_screen()
                 return
-            target = {'recording': m.volume, 'wifi': m.wifi, 'bluetooth': m.bluetooth,
+            target = {'recording': m.volume, 'wifi': m.wifi, 'wifi_profile': m.wifi, 'wifi_join': m.wifi,
+                      'bluetooth': m.bluetooth, 'bluetooth_device': m.bluetooth,
                       'service': m.services, 'reboot': m.system, 'shutdown': m.system}[action]
             d._launch_app(d.apps[target.APP_ID])
             if action in ('reboot', 'shutdown'):
                 target.ask_power('reboot' if action == 'reboot' else 'poweroff')
             elif action == 'service':
                 target.ask_service(p['service'], p['operation'])
+            elif action == 'wifi_join':
+                target.select_network(WifiNetwork(**p['network_snapshot']))
+            elif action == 'wifi_profile':
+                callback = (lambda: target.change('wifi-connect', p['profile_id'])) if p['operation'] == 'connect' else (
+                    lambda: target.change('wifi-disconnect', p['interface']))
+                target.confirmation.ask(p['operation'].title() + ' Wi-Fi', ['May disconnect SSH.', 'Recover in Network with button.'], callback)
+            elif action == 'bluetooth_device':
+                operation = 'remove' if p['operation'] == 'forget' else p['operation']
+                target.confirmation.ask(p['operation'].title() + ' Bluetooth', [p['device'][:32], p['address']],
+                                        lambda: target.change(operation, p['address']))
             else:
                 enabled = p['enabled']
                 if action == 'recording':
