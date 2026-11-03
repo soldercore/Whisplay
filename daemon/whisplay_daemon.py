@@ -435,6 +435,7 @@ class WhisplayDaemon:
         if self._screen_locked:
             return
         self.last_frame = None
+        self._home_clock_minute = int(time.time() // 60)
         self.desktop.render(
             self._home_apps(),
             self.selected_app_index,
@@ -645,7 +646,11 @@ class WhisplayDaemon:
     def _refresh_status_icons(self, force: bool = False):
         now = time.time()
         radio_changed = self.radio_status.updated.is_set()
+        clock_changed = (not self.foreground_app_id and not self._screen_locked
+                         and int(now // 60) != getattr(self, '_home_clock_minute', None))
         if not force and not radio_changed and now - self._last_status_poll_at < STATUS_POLL_INTERVAL_SEC:
+            if clock_changed:
+                self._render_desktop()
             return
         self._last_status_poll_at = now
         changed = self.status_poller.refresh()
@@ -653,7 +658,7 @@ class WhisplayDaemon:
             self.radio_status.updated.clear()
             self.event_broadcaster.broadcast("device_status", self.radio_status.snapshot(), app_id="whisplay-ai-chatbot")
             changed = True
-        if changed and not self.foreground_app_id and not self._screen_locked:
+        if (changed or clock_changed) and not self.foreground_app_id and not self._screen_locked:
             self._render_desktop()
 
     def _lock_screen(self):

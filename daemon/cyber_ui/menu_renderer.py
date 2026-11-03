@@ -4,11 +4,8 @@ Drop-in replacement for daemon_renderer.DesktopRenderer: the same two entry
 points (render, render_internal_app) with the same arguments. It only draws;
 app discovery, navigation, button handling and focus stay in the daemon.
 
-Layout mirrors the chatbot's terminal UI (soldercore/whisplay-ai-chatbot,
-python/whisplay_ui): a 27 px status bar inset from the rounded corners, a bracketed 80 px "stage" with a 24 px
-caption row, a 20 px-line body, and the approval-bar style action chips at the
-bottom. Frames are static: the only motion is the launch progress dots, which
-the daemon already re-renders while an app is starting.
+Home uses a compact status bar and seven application rows. Internal pages retain
+their existing cyber-terminal layout. No rendering method reads device state.
 """
 from __future__ import annotations
 
@@ -35,12 +32,11 @@ BASE_FONT_CANDIDATES = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 )
 
-PROMPT = (("pi@whisplay", theme.GREEN), (":", theme.MUTED), ("~", theme.CYAN), ("$", theme.MUTED))
-MID = theme.STAGE_VISUAL_H // 2
-CAPTION_MID = theme.STAGE_H - theme.STAGE_VISUAL_H - 11   # caption centre line (caption coords)
 FOOTER_Y = theme.HEIGHT - theme.APPROVAL_H
 FOOTER_MID = theme.APPROVAL_H // 2 - 2
-DESKTOP_ROWS = 5
+DESKTOP_ROWS = 7
+HOME_LIST_TOP = 34
+HOME_ROW_H = 28
 LIST_ROW_H = 40
 LIST_ROWS = 3
 LIST_TOP = theme.PANE_Y + theme.STRIP_H
@@ -99,28 +95,6 @@ class CyberDesktopRenderer:
             draw_text(draw, image, fonts.meta_bold, x + key_w + 6, y_mid, label, theme.TEXT)
             x += width + gap
 
-    def _caption(self, draw, image, top, label, color, right="", right_color=theme.DIM):
-        """Chatbot caption row: '> LABEL' left, detail right, dotted rule."""
-        fonts = self.fonts
-        mid = top + CAPTION_MID
-        x = theme.CHROME_LEFT
-        draw_text(draw, image, fonts.pixel8, x, mid, ">", color)
-        end = draw_text(draw, image, fonts.pixel8, x + 9, mid, fit_text(fonts.pixel8, label, 150), color)
-        if right:
-            text = fit_text(fonts.pixel8, right, theme.CHROME_RIGHT - end - 10)
-            width = fonts.pixel8.width(text)
-            draw_text(draw, image, fonts.pixel8, int(theme.CHROME_RIGHT - width), mid, text, right_color)
-        dotted(draw, top + (theme.STAGE_H - theme.STAGE_VISUAL_H) - 1)
-
-    def _prompt(self, draw, image, center_x, baseline, suffix="", stack=None):
-        stack = stack or self.fonts.meta_bold
-        parts = list(PROMPT) + ([(" " + suffix, theme.MUTED)] if suffix else [])
-        width = sum(stack.width(text) for text, _ in parts)
-        x = int(center_x - width / 2) if center_x is not None else theme.CHROME_LEFT
-        for text, fill in parts:
-            x = stack.draw(draw, image, x, baseline, text, fill)
-        return x
-
     def _cursor(self, draw, x, baseline, color=theme.GREEN):
         draw.rectangle([x, baseline - 12, x + theme.CURSOR_W - 1, baseline + 1], fill=color)
 
@@ -138,153 +112,66 @@ class CyberDesktopRenderer:
         self._wifi_signal_level = wifi_signal_level
         self._battery_level = battery_level
         self._wireless_status = wireless_status
-        image, draw = self._frame()
+        image = Image.new("RGB", (theme.WIDTH, theme.HEIGHT), theme.HOME_BG)
+        draw = ImageDraw.Draw(image)
         apps = list(apps or [])
-        total = len(apps)
-        modal_app_id = pending_app_id or running_app_id
-        if pending_app_id:
-            label, color = "LAUNCH", theme.CYAN
-        elif running_app_id:
-            label, color = "RUNNING", theme.GREEN
-        else:
-            label, color = "HOME", theme.GREEN
-        self._status(image, label, color)
-
-        stage_top = theme.PANE_Y
-        corner_brackets(draw, 8, stage_top + 3, theme.WIDTH - 9, stage_top + theme.STAGE_VISUAL_H - 4, 5, theme.LINE)
+        if apps:
+            selected_index %= len(apps)
+        bar = self.statusbar.render_home(self._battery_level, self._wireless_status,
+                                         wifi_level=self._wifi_signal_level, clock=time.strftime("%H:%M"))
+        image.paste(bar, (0, 0))
         if not apps:
-            self._render_empty(draw, image, stage_top)
+            draw_text(draw, image, self.fonts.body, 36, 116, "No applications", theme.MUTED)
         else:
-            selected_index %= total
-            selected = apps[selected_index]
-            self._render_hero(draw, image, stage_top, selected, selected_index, total, pending_app_id)
-            self._caption(
-                draw, image, stage_top + theme.STAGE_VISUAL_H, "APPS", theme.GREEN,
-                "%d INSTALLED" % total,
-            )
             self._render_app_list(draw, image, apps, selected_index, pending_app_id)
+            error = str(getattr(apps[selected_index], "last_error", "") or "")
+            if error:
+                draw_text(draw, image, self.fonts.meta, 24, 235,
+                          fit_text(self.fonts.meta, error, 192), theme.AMBER)
         self._chips(draw, image, (
             ("TAP", "NEXT", theme.GREEN, theme.GREEN_DIM),
             ("HOLD", "OPEN", theme.GREEN, theme.GREEN_DIM),
-            ("4X", "HOME", theme.CYAN, theme.CYAN_DIM),
         ), FOOTER_Y + FOOTER_MID)
-        if modal_app_id:
-            self._render_modal(draw, image, apps, modal_app_id, bool(pending_app_id))
         self._push(image)
 
-    def _render_hero(self, draw, image, top, app, index, total, pending_app_id):
-        fonts = self.fonts
-        cx = theme.WIDTH // 2
-        self._prompt(draw, image, cx, top + 22, "open")
-        stack = fonts.prompt
-        name = fit_text(stack, app_display_name(app), 190)
-        width = stack.width(name) + 4 + theme.CURSOR_W
-        x = int(cx - width / 2)
-        baseline = top + MID + 6
-        name_color = theme.GREEN if pending_app_id == app.app_id else theme.BRIGHT
-        end = stack.draw(draw, image, x, baseline, name, name_color)
-        self._cursor(draw, int(end + 4), baseline)
-        running = app.is_running()
-        error = getattr(app, "last_error", "")
-        state = "RUNNING" if running else "STOPPED"
-        meta = fit_text(fonts.pixel8, error, 190) if error else "%s  %02d/%02d" % (state, index + 1, total)
-        meta_w = fonts.pixel8.width(meta) + 9
-        mx = int(cx - meta_w / 2)
-        my = top + 62
-        if running:
-            draw.rectangle([mx, my - 3, mx + 5, my + 2], fill=theme.GREEN)
-        else:
-            draw.rectangle([mx, my - 3, mx + 5, my + 2], outline=theme.DIM)
-        draw_text(draw, image, fonts.pixel8, mx + 9, my, meta, theme.GREEN if running else theme.DIM)
-
     def _visible_rows(self, total, selected_index):
-        """Indices to show: everything when it fits, otherwise a circular
-        window centred on the selection (navigation wraps around)."""
-        if total <= DESKTOP_ROWS:
-            return list(range(total))
-        half = DESKTOP_ROWS // 2
-        return [(selected_index + offset) % total for offset in range(-half, half + 1)]
+        """Keep a contiguous viewport still until selection reaches its edge."""
+        start = min(getattr(self, "_home_start", 0), max(0, total - DESKTOP_ROWS))
+        if selected_index < start:
+            start = selected_index
+        elif selected_index >= start + DESKTOP_ROWS:
+            start = selected_index - DESKTOP_ROWS + 1
+        self._home_start = start
+        return list(range(start, min(total, start + DESKTOP_ROWS)))
 
     def _render_app_list(self, draw, image, apps, selected_index, pending_app_id):
-        fonts = self.fonts
-        total = len(apps)
-        top = theme.BODY_TOP_STAGE + theme.BODY_PAD
-        for row, idx in enumerate(self._visible_rows(total, selected_index)):
+        fonts, total = self.fonts, len(apps)
+        visible = self._visible_rows(total, selected_index)
+        for row, idx in enumerate(visible):
             app = apps[idx]
-            y = top + row * theme.LINE_H
-            mid = y + theme.LINE_H // 2
+            y = HOME_LIST_TOP + row * HOME_ROW_H
+            mid = y + HOME_ROW_H // 2
             selected = idx == selected_index
-            distance = 0
-            if not selected:
-                distance = min((idx - selected_index) % total, (selected_index - idx) % total)
             if selected:
-                draw.rectangle([10, y + 1, theme.WIDTH - 11, y + theme.LINE_H - 2], fill=theme.RAISED, outline=theme.GREEN_DIM)
-                draw_text(draw, image, fonts.pixel8, theme.CHROME_LEFT, mid, ">", theme.GREEN)
-                color = theme.GREEN if pending_app_id == app.app_id else theme.BRIGHT
+                draw.rounded_rectangle((14, y+1, 220, y+HOME_ROW_H-2), radius=4,
+                                       fill=theme.RAISED, outline=theme.GREEN_MID)
+                draw_text(draw, image, fonts.pixel8, 21, mid, ">", theme.GREEN)
             else:
-                draw_text(draw, image, fonts.pixel8, theme.CHROME_LEFT, mid, "%02d" % (idx + 1), theme.DIM)
-                color = theme.MUTED if distance <= 1 else theme.DIM
-            tag_w = 0
-            if app.is_running():
-                tag_w = self._tag(draw, image, theme.CHROME_RIGHT - 2, mid, "RUN", theme.GREEN, theme.GREEN_DIM) + 6
-            name_x = theme.CHROME_LEFT + 16
-            name = fit_text(fonts.body, app_display_name(app), theme.CHROME_RIGHT - 4 - tag_w - name_x)
-            fonts.body.draw(draw, image, name_x, y + 15, name, color)
+                draw.line((34, y+HOME_ROW_H-1, 218, y+HOME_ROW_H-1), fill=theme.LINE)
+            marker = "OPEN" if pending_app_id == app.app_id else "RUN" if app.is_running() else ""
+            marker_width = fonts.pixel8.width(marker) + 10 if marker else 0
+            name = fit_text(fonts.body, app_display_name(app), 180-marker_width)
+            draw_text(draw, image, fonts.body, 34, mid, name, theme.BRIGHT if selected else theme.TEXT)
+            if marker:
+                draw_text(draw, image, fonts.pixel8, int(213-fonts.pixel8.width(marker)), mid,
+                          marker, theme.GREEN if marker == "RUN" else theme.CYAN)
         if total > DESKTOP_ROWS:
-            self._scrollbar(draw, theme.BODY_TOP_STAGE, FOOTER_Y - 2, selected_index, total)
-
-    def _tag(self, draw, image, right, mid, text, fg, border):
-        stack = self.fonts.pixel8
-        width = int(stack.width(text)) + 5
-        x0 = right - width
-        draw.rectangle([x0, mid - 5, right - 1, mid + 4], outline=border)
-        draw_text(draw, image, stack, x0 + 3, mid, text, fg)
-        return width
-
-    def _scrollbar(self, draw, top, bottom, index, total):
-        span = bottom - top - 8
-        thumb = max(8, int(span * DESKTOP_ROWS / float(total)))
-        pos = top + 4 + int((span - thumb) * index / float(max(1, total - 1)))
-        draw.line([(theme.WIDTH - 6, pos), (theme.WIDTH - 6, pos + thumb)], fill=theme.GREEN_DIM)
-
-    def _render_empty(self, draw, image, top):
-        fonts = self.fonts
-        cx = theme.WIDTH // 2
-        self._prompt(draw, image, cx, top + 22, "ls apps")
-        text = "no apps registered"
-        width = fonts.prompt.width(text) + 4 + theme.CURSOR_W
-        x = int(cx - width / 2)
-        baseline = top + MID + 6
-        end = fonts.prompt.draw(draw, image, x, baseline, text, theme.AMBER)
-        self._cursor(draw, int(end + 4), baseline)
-        self._caption(draw, image, top + theme.STAGE_VISUAL_H, "APPS", theme.AMBER, "0 INSTALLED")
-        body = theme.BODY_TOP_STAGE + theme.BODY_PAD
-        fonts.meta.draw(draw, image, theme.TEXT_LEFT, body + 14, "Apps register through the daemon", theme.MUTED)
-        fonts.meta.draw(draw, image, theme.TEXT_LEFT, body + 28, "socket (app.register).", theme.MUTED)
-
-    def _render_modal(self, draw, image, apps, app_id, pending):
-        fonts = self.fonts
-        color = theme.CYAN if pending else theme.GREEN
-        dim = theme.CYAN_DIM if pending else theme.GREEN_DIM
-        # The modal replaces the app list instead of floating over it.
-        body_top, body_bottom = theme.BODY_TOP_STAGE, FOOTER_Y - 1
-        draw.rectangle([0, body_top, theme.WIDTH - 1, body_bottom], fill=theme.VOID)
-        w, h = 200, 70
-        x0 = (theme.WIDTH - w) // 2
-        y0 = body_top + (body_bottom - body_top - h) // 2
-        draw.rectangle([x0, y0, x0 + w - 1, y0 + h - 1], fill=theme.RAISED, outline=color)
-        draw.rectangle([x0 + 2, y0 + 2, x0 + w - 3, y0 + h - 3], outline=dim)
-        label = "LAUNCHING" if pending else "APP RUNNING"
-        end = draw_text(draw, image, fonts.pixel8, x0 + 10, y0 + 14, "> " + label, color)
-        if pending:
-            lit = int(time.time() * 6) % 4
-            for i in range(3):
-                fill = color if i < lit else dim
-                draw.rectangle([int(end) + 6 + i * 5, y0 + 14, int(end) + 7 + i * 5, y0 + 15], fill=fill)
-        app = next((a for a in apps if a.app_id == app_id), None)
-        name = app_display_name(app) if app is not None else app_id
-        fonts.prompt.draw(draw, image, x0 + 10, y0 + 40, fit_text(fonts.prompt, name, w - 20), theme.TEXT)
-        fonts.meta.draw(draw, image, x0 + 10, y0 + 57, fit_text(fonts.meta, app_id, w - 20), theme.DIM)
+            top, bottom = HOME_LIST_TOP+3, HOME_LIST_TOP+DESKTOP_ROWS*HOME_ROW_H-4
+            span = bottom-top
+            thumb = max(12, int(span*DESKTOP_ROWS/total))
+            pos = top+int((span-thumb)*visible[0]/max(1,total-DESKTOP_ROWS))
+            draw.line((226, top, 226, bottom), fill=theme.LINE)
+            draw.line((226, pos, 226, pos+thumb), fill=theme.GREEN_MID)
 
     # ------------------------------------------------------- internal apps
     def render_internal_app(self, view_model: dict):

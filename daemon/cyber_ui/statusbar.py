@@ -29,6 +29,35 @@ class StatusBar:
     def __init__(self, fonts):
         self.fonts = fonts
 
+    def render_home(self, battery_level, wireless_status, wifi_level=None, clock=None):
+        """Compact Home header. Unknown battery is explicit, never a fake 0%."""
+        image = Image.new("RGB", (theme.WIDTH, theme.STATUS_H), theme.HOME_BG)
+        draw = ImageDraw.Draw(image)
+        draw.line((0, theme.DIVIDER_Y, theme.WIDTH-1, theme.DIVIDER_Y), fill=theme.LINE)
+        draw.rectangle((24, CENTER_Y-3, 29, CENTER_Y+2), fill=theme.GREEN)
+        left = draw_text(draw, image, self.fonts.pixel8, 34, CENTER_Y, "HOME", theme.TEXT)
+        draw.line((24, theme.DIVIDER_Y, int(left), theme.DIVIDER_Y), fill=theme.GREEN_MID)
+        valid = type(battery_level) is int and 0 <= battery_level <= 100
+        text = "%d%%" % battery_level if valid else "--%"
+        right = int(theme.STATUS_SAFE_RIGHT-self.fonts.pixel8.width(text))
+        color = battery_color(battery_level) if valid and battery_level <= 30 else theme.TEXT if valid else theme.MUTED
+        draw_text(draw, image, self.fonts.pixel8, right, CENTER_Y, text, color)
+        state = wireless_status
+        if state is None:
+            # A legacy signal sample proves a connection only when nonzero;
+            # it cannot tell us that either radio is disabled.
+            state = {'wifi': {'enabled': True if wifi_level else None,
+                     'connected': True if wifi_level else None,
+                     'signal': {1: 20, 2: 50, 3: 90}.get(wifi_level)}, 'bluetooth': {}}
+        radio_right = int(theme.STATUS_SAFE_RIGHT-self.fonts.pixel8.width("100%")-GAP)
+        right = draw_wireless(draw, radio_right, CENTER_Y, state, theme)
+        if clock:
+            width = self.fonts.meta_bold.width(clock)
+            x = max(int((theme.WIDTH-width)/2), int(left+GAP))
+            if x+width <= right-GAP:
+                draw_text(draw, image, self.fonts.meta_bold, x, CENTER_Y, clock, theme.TEXT)
+        return image
+
     def render(self, label, color, battery_level=None, wifi_level=None, clock=None, wireless_status=None):
         image = Image.new("RGB", (theme.WIDTH, theme.STATUS_H), theme.VOID)
         draw = ImageDraw.Draw(image)

@@ -168,7 +168,7 @@ def safe_area_violations(fb, theme):
     radius = theme.SAFE_CHECK_RADIUS
     ys, xs = np.mgrid[0:radius, 0:radius]
     curve = (radius - xs) ** 2 + (radius - ys) ** 2 > radius ** 2
-    lit = fb.any(axis=2)
+    lit = fb.any(axis=2) & (fb != np.asarray(theme.HOME_BG)).any(axis=2)
     corners = {
         "top-left": (slice(0, radius), slice(0, radius), False, False),
         "top-right": (slice(0, radius), slice(W - radius, W), False, True),

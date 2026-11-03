@@ -99,7 +99,7 @@ class CyberMenuRenderTests(unittest.TestCase):
         board = self.board()
         self.fallback(board).render(self.preview.default_apps(), 2, None, None, 3, 80)
         colours = {tuple(c) for c in board.fb.reshape(-1, 3)}
-        self.assertIn(theme.VOID, colours)
+        self.assertIn(theme.HOME_BG, colours)
         self.assertIn(theme.GREEN, colours)
         self.assertIn(theme.LINE, colours)
 

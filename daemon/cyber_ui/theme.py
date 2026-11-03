@@ -16,6 +16,7 @@ def _hex(value):
 
 # ---- Palette (identical to the chatbot UI) -------------------------------
 VOID = _hex("000000")
+HOME_BG = (8, 12, 8)  # RGB565-exact charcoal; Home only.
 RAISED = _hex("080C08")
 PANEL = _hex("101810")
 LINE = _hex("182821")
