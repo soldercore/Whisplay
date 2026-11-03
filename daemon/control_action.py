@@ -14,11 +14,18 @@ import uuid
 SERVICES = {'ssh': 'ssh.service', 'ollama': 'ollama.service',
             'whisper': 'whisplay-whisper.service', 'piper': 'whisplay-piper.service'}
 PROC = Path('/proc')
-PROTOCOL = 2
+PROTOCOL = 3
+# Deliberately not configurable by environment, JSON, CLI or physical confirmation.
+# Tests can exercise the dormant algorithms, but deployment cannot enable them.
+DISRUPTIVE_WIFI_ENABLED = False
 
 
 class ControlBlocked(RuntimeError):
     pass
+
+
+class WifiRecoveryPending(RuntimeError):
+    """The operation failed; a timer is retained, restoration is NOT verified."""
 
 
 ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C', 'HOME': '/root'}
@@ -108,13 +115,18 @@ def wifi_checkpoint():
         raise
     try:
         yield
-        bus('CheckpointDestroy', 'o', checkpoint)
-    except BaseException:
+    except BaseException as exc:
+        # Explicit CheckpointRollback destroys the checkpoint even when its
+        # per-device restoration result fails. Leave the finite NM timer intact.
+        # Do not report this as restored: outcome needs independent verification.
+        raise WifiRecoveryPending('Wi-Fi change failed; automatic rollback pending, restoration unverified') from exc
+    else:
         try:
-            bus('CheckpointRollback', 'o', checkpoint)
-        except Exception:
-            pass  # Do not commit: the independent 120-second NM timer remains.
-        raise
+            bus('CheckpointDestroy', 'o', checkpoint)
+        except Exception as exc:
+            # A lost reply may follow a successful destroy; never claim that a
+            # timer or rollback still exists after an ambiguous commit result.
+            raise WifiRecoveryPending('Checkpoint commit unconfirmed; recovery state unknown') from exc
 
 
 @contextmanager
@@ -132,6 +144,9 @@ def operation_lock():
 
 
 def dispatch(args, read_input):
+    if not DISRUPTIVE_WIFI_ENABLED and args and (args[0] in ('wifi-connect', 'wifi-disconnect', 'wifi-join')
+                                               or args == ['wifi-radio', 'off']):
+        raise ControlBlocked('wifi_changes_disabled')
     if args == ['check-ssh']:
         guard_ssh()
     elif args == ['wifi-scan']:
@@ -218,13 +233,15 @@ def main():
             raise PermissionError('Root helper is not installed/authorized')
         if sys.argv[1:] == ['capabilities']:
             print(json.dumps({'api': PROTOCOL, 'ssh_guard': True, 'wifi_checkpoint_seconds': 120,
-                              'actions': ['wifi-scan', 'wifi-radio', 'wifi-connect', 'wifi-disconnect', 'wifi-join', 'service', 'power']}))
+                              'disruptive_wifi': False,
+                              'actions': ['wifi-scan', 'wifi-radio-on', 'service', 'power']}))
             return 0
         with operation_lock():
             dispatch(sys.argv[1:], sys.stdin.read)
-    except ControlBlocked:
-        print('{"error":"ssh_session_active"}', file=sys.stderr)
-        return 3
+    except ControlBlocked as exc:
+        disabled = str(exc) == 'wifi_changes_disabled'
+        print('{"error":"wifi_changes_disabled"}' if disabled else '{"error":"ssh_session_active"}', file=sys.stderr)
+        return 4 if disabled else 3
     except Exception:
         # subprocess/JSON exceptions can contain credentials. Never echo them.
         print('Control action failed; permissions, device or service unavailable', file=sys.stderr)

@@ -8,6 +8,7 @@ import threading
 import types
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 DAEMON_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -27,6 +28,7 @@ except ImportError:
 
 from daemon_shared import resolve_runtime_config
 from whisplay_daemon import WhisplayDaemon
+from daemon_models import AppRecord
 
 
 class AutostartConfigTests(unittest.TestCase):
@@ -60,7 +62,7 @@ class AutostartLaunchTests(unittest.TestCase):
         daemon.state_lock = threading.RLock()
         daemon.selected_app_index = 0
         first = SimpleNamespace(app_id="first-app")
-        target = SimpleNamespace(app_id="demo-app")
+        target = AppRecord("demo-app", "Demo")
         daemon.apps = {first.app_id: first, target.app_id: target}
         daemon._app_list = lambda: [first, target]
         daemon.launched = []
@@ -80,12 +82,16 @@ class AutostartLaunchTests(unittest.TestCase):
 
 
 class AutostartCommandTests(unittest.TestCase):
+    def setUp(self):
+        peer = patch("ipc_auth.peer_identity", return_value=os.getpid())
+        peer.start(); self.addCleanup(peer.stop)
+
     def make_daemon(self, settings_path):
         daemon = WhisplayDaemon.__new__(WhisplayDaemon)
         daemon.state_lock = threading.RLock()
         daemon.settings_path = settings_path
         daemon.autostart_app_id = ""
-        daemon.apps = {"demo-app": SimpleNamespace(app_id="demo-app")}
+        daemon.apps = {"demo-app": AppRecord("demo-app", "Demo")}
         return daemon
 
     def test_command_persists_autostart_app(self):

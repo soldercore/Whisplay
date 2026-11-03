@@ -5,16 +5,15 @@ import os
 import re
 from pathlib import Path
 import shutil
-import socket
 import stat
-import struct
 import subprocess
 import threading
 import time
 import uuid
 
-from internal_apps.control_client import HELPER, control
+from internal_apps.control_client import HELPER, WIFI_DISABLED, control
 from internal_apps.wifi_app import WifiNetwork
+from ipc_auth import peer_identity, tracked_app
 
 APP = 'whisplay-ai-chatbot'
 READS = {'capabilities', 'apps', 'display', 'audio', 'network', 'wifi', 'bluetooth', 'services'}
@@ -33,14 +32,10 @@ class ControlAPI:
         self.operations = threading.Lock()
 
     def _authorize(self, connection, mutation):
-        if connection is None or not hasattr(socket, 'SO_PEERCRED'):
-            raise PermissionError('Local Unix peer credentials required')
-        pid, uid, _ = struct.unpack('3i', connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-        if uid != os.getuid():
-            raise PermissionError('Daemon user required')
+        pid = peer_identity(connection)
         if mutation:
-            app = self.daemon.apps.get(APP)
-            if not app or not app.is_running() or self.daemon.foreground_app_id != APP or os.getpgid(pid) != app.process.pid:
+            app = tracked_app(self.daemon, pid)
+            if not app or app.app_id != APP or self.daemon.foreground_app_id != APP:
                 raise PermissionError('Only the tracked foreground GLaDOS process may control the device')
 
     def helper_available(self):
@@ -58,7 +53,8 @@ class ControlAPI:
             if result.returncode != 0 or len(result.stdout) > 4096:
                 return False
             capability = json.loads(result.stdout)
-            return capability.get('api') == 2 and capability.get('ssh_guard') is True and capability.get('wifi_checkpoint_seconds') == 120
+            return (capability.get('api') == 3 and capability.get('ssh_guard') is True
+                    and capability.get('disruptive_wifi') is False and capability.get('wifi_checkpoint_seconds') == 120)
         except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
             return False
 
@@ -84,9 +80,9 @@ class ControlAPI:
                     'home': feature(self.confirmations, reason='Speech handoff unavailable'),
                     'lock': feature(self.confirmations, reason='Speech handoff unavailable'),
                     'recording': feature(APP in self.daemon.apps and self.confirmations, True, 'GLaDOS not registered / handoff unavailable'),
-                    'wifi': {**privileged(nm), 'immediate_enable': True},
+                    'wifi': {**privileged(nm), 'immediate_enable': True, 'disable_supported': False},
                     'wifi_scan': feature(nm, reason='NetworkManager unavailable'),
-                    'wifi_profile': privileged(nm), 'wifi_join': privileged(nm),
+                    'wifi_profile': feature(False, reason=WIFI_DISABLED), 'wifi_join': feature(False, reason=WIFI_DISABLED),
                     'bluetooth': {**feature(bt and self.confirmations, True, 'BlueZ / confirmation unavailable'), 'immediate_enable': True},
                     'bluetooth_scan': feature(bt, reason='BlueZ controller unavailable'),
                     'bluetooth_device': feature(bt and self.confirmations, True, 'BlueZ / confirmation unavailable'),
@@ -100,7 +96,7 @@ class ControlAPI:
                           'Wi-Fi passwords are entered only on the local Network screen, never through voice tools.',
                           'Bluetooth device actions require a uniquely discovered device and local confirmation.',
                           'Active SSH sessions block disruptive Wi-Fi operations and SSH restart; service start is immediate.',
-                          'Wi-Fi profile changes require a NetworkManager checkpoint; radio recovery uses local Network controls.',
+                          'Wi-Fi enable and scan are available; disable, join, switch and disconnect are blocked until recovery is verified.',
                           'Radio authorization is checked by the existing operations; no hardware power-on is promised.']}
 
     def read(self, scope):
@@ -187,6 +183,8 @@ class ControlAPI:
                 raise ValueError('Valid discovered target required')
         if set(p) != permitted:
             raise ValueError('Unexpected or missing action parameters')
+        if action == 'wifi' and not p['enabled']:
+            raise RuntimeError(WIFI_DISABLED)
         feature = self.capabilities(privileged=action in PRIVILEGED_ACTIONS)['actions'][action]
         if not feature['supported']:
             raise RuntimeError(feature.get('reason') or 'Action unavailable')

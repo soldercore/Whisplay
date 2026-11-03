@@ -60,15 +60,15 @@ class VoiceControlTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):api.execute({'action':'volume','level':30})
 
     def test_confirmation_never_executes_before_speech_exit_and_button(self):
-        api,d=self.setup_api()
+        api,d=self.supported_api()
         api.helper_available=lambda:True
-        d.internal_apps.wifi.change=Mock()
+        d.internal_apps.bluetooth.change=Mock()
         with patch('control_api.shutil.which',return_value='/usr/bin/nmcli'):
-            r=api.handle('control.execute',{'action':'wifi','enabled':False},None)
+            r=api.handle('control.execute',{'action':'bluetooth','enabled':False},None)
         self.assertEqual(r['status'],'awaiting_physical_confirmation')
         api.advance()
         self.assertEqual(d.foreground_app_id,APP)
-        d.internal_apps.wifi.change.assert_not_called()
+        d.internal_apps.bluetooth.change.assert_not_called()
         with patch('whisplay_daemon.process_group_members',return_value={}):
             api.handle('control.present',{'ticket':r['ticket']},None)
         api.advance()
@@ -77,10 +77,10 @@ class VoiceControlTests(unittest.TestCase):
         d.foreground_app_id=None
         d._app_exits.clear()
         api.advance()
-        self.assertEqual(d.foreground_app_id,'whisplay-wifi')
-        self.assertEqual(d.internal_apps.wifi.confirmation.selected,0)
-        d.internal_apps.wifi.handle_button(True)
-        d.internal_apps.wifi.change.assert_not_called()
+        self.assertEqual(d.foreground_app_id,'whisplay-bluetooth')
+        self.assertEqual(d.internal_apps.bluetooth.confirmation.selected,0)
+        d.internal_apps.bluetooth.handle_button(True)
+        d.internal_apps.bluetooth.change.assert_not_called()
         with self.assertRaises(ValueError):api.handle('control.present',{'ticket':r['ticket']},None)
 
     def test_pending_ticket_expires_and_cancel_never_changes_settings(self):
@@ -94,22 +94,22 @@ class VoiceControlTests(unittest.TestCase):
         self.assertTrue(d._recording_enabled)
 
     def test_physical_confirm_executes_captured_request_once(self):
-        api,d=self.setup_api()
+        api,d=self.supported_api()
         api.helper_available=lambda:True
-        d.internal_apps.wifi.change=Mock()
+        d.internal_apps.bluetooth.change=Mock()
         with patch('control_api.shutil.which',return_value='/usr/bin/nmcli'):
-            r=api.handle('control.execute',{'action':'wifi','enabled':False},None)
+            r=api.handle('control.execute',{'action':'bluetooth','enabled':False},None)
         with patch('whisplay_daemon.process_group_members',return_value={}):
             api.handle('control.present',{'ticket':r['ticket']},None)
         d.apps[APP].process=None
         d.foreground_app_id=None
         d._app_exits.clear()
         api.advance()
-        wifi=d.internal_apps.wifi
+        wifi=d.internal_apps.bluetooth
         wifi.handle_button(False)  # Physical tap selects Confirm.
         wifi.change.assert_not_called()
         wifi.handle_button(True)  # Physical hold commits the captured request.
-        wifi.change.assert_called_once_with('wifi-radio','off')
+        wifi.change.assert_called_once_with('power',enabled=False)
         api.advance()
         self.assertIsNone(wifi.confirmation.pending)
         wifi.change.assert_called_once()
@@ -137,7 +137,7 @@ class VoiceControlTests(unittest.TestCase):
         api.authorize=api._authorize
         connection=Mock()
         connection.getsockopt.return_value=struct.pack('3i',123,os.getuid()+1 if hasattr(os,'getuid') else 1001,1)
-        with patch('control_api.os.getuid',return_value=1000,create=True),patch('control_api.socket.SO_PEERCRED',17,create=True):
+        with patch('control_api.os.getuid',return_value=1000,create=True),patch('ipc_auth.socket.SO_PEERCRED',17,create=True):
             with self.assertRaises(PermissionError):api.handle('control.read',{'scope':'apps'},connection)
             connection.getsockopt.return_value=struct.pack('3i',123,1000,1)
             with patch('control_api.os.getpgid',return_value=999,create=True):

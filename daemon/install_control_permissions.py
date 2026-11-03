@@ -38,7 +38,7 @@ def install(user):
     if not data.startswith(b'#!/usr/bin/python3 -I\n'):
         raise ValueError('Helper requires isolated system Python and canonical LF source')
     compile(data, str(SOURCE), 'exec')  # Syntax validation only; never import/execute it.
-    policy = (user + ' ALL=(root) NOPASSWD: /usr/lib/whisplay/control-action\n').encode('ascii')
+    policy = (user + ' ALL=(root) NOPASSWD: NOSETENV: /usr/lib/whisplay/control-action\n').encode('ascii')
     created = []
     try:
         # Validate the exact policy before installing anything.

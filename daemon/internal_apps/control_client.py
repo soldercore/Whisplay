@@ -6,9 +6,16 @@ class ControlBlocked(RuntimeError):
 
 
 HELPER = '/usr/lib/whisplay/control-action'
+WIFI_DISABLED = 'Disruptive Wi-Fi changes are unavailable until automatic recovery is verified.'
+
+
+def disruptive_wifi(args):
+    return bool(args and (args[0] in ('wifi-connect', 'wifi-disconnect', 'wifi-join') or tuple(args) == ('wifi-radio', 'off')))
 
 
 def control(run, *args, payload=None):
+    if disruptive_wifi(args):
+        raise ControlBlocked(WIFI_DISABLED)
     kwargs = {'timeout': 50}
     if payload is not None:
         kwargs['input_text'] = json.dumps(payload)

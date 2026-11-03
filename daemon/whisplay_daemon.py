@@ -5,8 +5,10 @@ import math
 import mmap
 import os
 import re
+import shlex
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -21,6 +23,7 @@ if RUNTIME_DIR not in sys.path:
 from daemon_events import EventBroadcaster
 from daemon_models import AppRecord
 from daemon_processes import process_group_members
+from ipc_auth import authorize as authorize_ipc
 from control_api import ControlAPI
 from daemon_pisugar import PISUGAR3_POWER_BUTTON_POLL_INTERVAL_SEC, PiSugarManager
 from daemon_renderer import DesktopRenderer
@@ -450,7 +453,8 @@ class WhisplayDaemon:
 
     def _allocate_framebuffer(self, app: AppRecord):
         framebuffer_path = f"/tmp/whisplay-fb-{app.app_id}-{uuid.uuid4().hex}.bin"
-        framebuffer_file = open(framebuffer_path, "w+b")
+        fd = os.open(framebuffer_path, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        framebuffer_file = os.fdopen(fd, "w+b")
         framebuffer_file.truncate(FRAMEBUFFER_SIZE)
         framebuffer_map = mmap.mmap(framebuffer_file.fileno(), FRAMEBUFFER_SIZE)
         framebuffer_map.write(b"\x00" * FRAMEBUFFER_SIZE)
@@ -510,7 +514,6 @@ class WhisplayDaemon:
             "app_foreground_acquired",
             {
                 "app_id": app.app_id,
-                "session_token": app.session_token,
             },
             app_id=app.app_id,
         )
@@ -752,6 +755,7 @@ class WhisplayDaemon:
             raise RuntimeError("Previous app is stopping; try again shortly")
         if not app.launch_command:
             raise RuntimeError(f"app {app.app_id} has no launch command")
+        argv, legacy_log = self._launch_arguments(app.launch_command)
         if app.is_running():
             if self.event_broadcaster.has_app_subscribers(app.app_id):
                 self._grant_focus(app)
@@ -768,13 +772,17 @@ class WhisplayDaemon:
         stdout_target = None
         try:
             app.last_error = ""
+            if legacy_log and not app.use_daemon_default_log:
+                fd = os.open(legacy_log, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+                app.process_log_handle = os.fdopen(fd, 'ab')
+                stdout_target = app.process_log_handle
             if app.use_daemon_default_log:
                 os.makedirs(DEFAULT_DAEMON_HOME, exist_ok=True)
                 app.process_log_handle = open(DEFAULT_APP_LOG_PATH, "ab")
                 stdout_target = app.process_log_handle
             app.process = subprocess.Popen(
-                app.launch_command,
-                shell=True,
+                argv,
+                shell=False,
                 cwd=cwd,
                 env=env,
                 start_new_session=True,
@@ -790,6 +798,26 @@ class WhisplayDaemon:
         self.pending_launch_app_id = app.app_id
         self.pending_launch_started_at = time.time()
         self._render_desktop()
+
+    @staticmethod
+    def _launch_arguments(command):
+        # Preserve the installed chatbot's one legacy logging suffix, without
+        # executing shell syntax. Other pipelines/evaluation fail closed.
+        argv = shlex.split(command)
+        log = None
+        if len(argv) >= 4 and argv[-3] == '>>' and argv[-1] == '2>&1':
+            log, argv = argv[-2], argv[:-3]
+            if not os.path.isabs(log):
+                raise ValueError('Absolute application log path required')
+        if not argv or any(any(c in value for c in ';|&<>`$\n\r') for value in argv):
+            raise ValueError('Shell expressions are not supported')
+        # Script launch is supported; shell eval and executable wrappers are not.
+        if os.path.basename(argv[0]) in ('env', 'sudo', 'su', 'doas'):
+            raise ValueError('Privileged/wrapper launch is not supported')
+        if os.path.basename(argv[0]) in ('sh', 'bash', 'dash', 'zsh', 'ksh') and any(
+                value.startswith('-') and 'c' in value for value in argv[1:]):
+            raise ValueError('Shell evaluation is not supported')
+        return argv, log
 
     def _on_button_pressed(self):
         with self.state_lock:
@@ -1056,8 +1084,12 @@ class WhisplayDaemon:
 
     def _register_app(self, payload: dict) -> dict:
         app_id = str(payload.get("app_id", "")).strip()
-        if not app_id:
-            raise RuntimeError("app_id is required")
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', app_id):
+            raise RuntimeError("valid app_id is required")
+        if self.internal_apps.is_internal_app(app_id):
+            raise PermissionError('Built-in applications cannot be registered through IPC')
+        if payload.get('launch_command'):
+            self._launch_arguments(str(payload['launch_command']))
         record = self.apps.get(app_id)
         if record is None:
             record = AppRecord(
@@ -1116,6 +1148,8 @@ class WhisplayDaemon:
         ]
 
     def handle_command(self, request: dict, conn) -> tuple[dict, bool]:
+        if not isinstance(request, dict):
+            raise ValueError('IPC request must be an object')
         version = request.get("version", 1)
         if version != 1:
             return {"ok": False, "error": f"unsupported version: {version}"}, False
@@ -1123,12 +1157,15 @@ class WhisplayDaemon:
         cmd = str(request.get("cmd", "")).strip()
         payload = request.get("payload") or {}
         if not isinstance(payload, dict):
-            payload = {}
+            raise ValueError('IPC payload must be an object')
 
         if cmd.startswith('control.'):
+            with self.state_lock:
+                authorize_ipc(self, cmd, payload, conn)
             return {'ok': True, 'payload': self.control_api.handle(cmd, payload, conn)}, False
 
         with self.state_lock:
+            authorize_ipc(self, cmd, payload, conn)
             if cmd == "health.ping":
                 return {
                     "ok": True,
@@ -1296,11 +1333,18 @@ class WhisplayDaemon:
 
     def start(self):
         os.makedirs(self.socket_dir, exist_ok=True)
-        if os.path.exists(self.socket_path):
+        if os.path.lexists(self.socket_path):
+            info = os.lstat(self.socket_path)
+            if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+                raise PermissionError('Unsafe existing daemon socket')
             os.unlink(self.socket_path)
         self.server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.server_socket.bind(self.socket_path)
-        os.chmod(self.socket_path, 0o666)
+        previous_umask = os.umask(0o077)
+        try:
+            self.server_socket.bind(self.socket_path)
+        finally:
+            os.umask(previous_umask)
+        os.chmod(self.socket_path, 0o600)
         self.server_socket.listen(8)
         self._set_rgb(0, 0, 0)
         self.board.set_backlight(100)

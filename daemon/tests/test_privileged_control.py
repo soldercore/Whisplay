@@ -28,6 +28,11 @@ CHECKPOINT = '/org/freedesktop/NetworkManager/Checkpoint/1'
 
 
 class PrivilegedContracts(unittest.TestCase):
+    def setUp(self):
+        # Exercise dormant algorithms; test_network_gate proves the shipping gate.
+        gate = patch.object(helper, "DISRUPTIVE_WIFI_ENABLED", True)
+        gate.start(); self.addCleanup(gate.stop)
+
     def test_current_ssh_blocks_all_disruptive_operations_before_mutation(self):
         cases = [['wifi-radio','off'], ['wifi-connect',UUID], ['wifi-disconnect','wlan0'],
                  ['wifi-join'], ['service','restart','ssh']]
@@ -66,9 +71,9 @@ class PrivilegedContracts(unittest.TestCase):
                 return self.checkpoint_bus(method,*args)
             with self.subTest(failed_rollback=failed_rollback),patch.object(helper,'guard_ssh'), \
                  patch.object(helper,'nm',return_value='wlan0:wifi'),patch.object(helper,'bus',side_effect=bus) as calls:
-                with self.assertRaisesRegex(TimeoutError,'change failed'):
+                with self.assertRaisesRegex(helper.WifiRecoveryPending,'restoration unverified'):
                     with helper.wifi_checkpoint():raise TimeoutError('change failed')
-                self.assertIn(('CheckpointRollback','o',CHECKPOINT),[c.args for c in calls.call_args_list])
+                self.assertNotIn('CheckpointRollback',[c.args[0] for c in calls.call_args_list])
                 self.assertNotIn('CheckpointDestroy',[c.args[0] for c in calls.call_args_list])
 
     def test_new_ssh_session_during_setup_discards_unchanged_checkpoint_without_rollback(self):
@@ -133,7 +138,7 @@ class PrivilegedContracts(unittest.TestCase):
     def test_metadata_and_denials_never_execute_or_echo_sensitive_data(self):
         with patch.object(helper.os,'geteuid',return_value=0,create=True),patch.object(sys,'argv',['control-action','capabilities']), \
              contextlib.redirect_stdout(io.StringIO()) as out,patch.object(helper,'run') as run:
-            self.assertEqual(helper.main(),0);self.assertEqual(json.loads(out.getvalue())['api'],2);run.assert_not_called()
+            self.assertEqual(helper.main(),0);self.assertEqual(json.loads(out.getvalue())['api'],3);run.assert_not_called()
         secret='SyntheticPrivateValue99'
         with patch.object(helper.os,'geteuid',return_value=0,create=True),patch.object(sys,'argv',['control-action','wifi-join']), \
              patch.object(helper,'operation_lock',side_effect=contextlib.nullcontext), \
@@ -165,9 +170,9 @@ class PrivilegedContracts(unittest.TestCase):
 
     def test_typed_ssh_denial_is_public_and_preserved_without_echoing_other_errors(self):
         run=Mock(return_value=SimpleNamespace(returncode=3,stderr='{"error":"ssh_session_active"}'))
-        with self.assertRaisesRegex(ControlBlocked,'Active SSH session'):control(run,'wifi-radio','off')
+        with self.assertRaisesRegex(ControlBlocked,'Active SSH session'):control(run,'service','restart','ssh')
         run.return_value=SimpleNamespace(returncode=1,stderr='SyntheticSecret99')
-        with self.assertRaises(RuntimeError) as error:control(run,'wifi-radio','off')
+        with self.assertRaises(RuntimeError) as error:control(run,'service','restart','ssh')
         self.assertNotIn('SyntheticSecret99',str(error.exception))
 
     def test_immediate_start_uses_shared_operation_while_glados_keeps_foreground(self):
@@ -183,7 +188,7 @@ class PrivilegedContracts(unittest.TestCase):
     def test_unsafe_preflight_denial_does_not_close_glados_or_prepare_confirmation(self):
         api,d=test_voice_control.VoiceControlTests().supported_api()
         api.check_ssh=Mock(side_effect=ControlBlocked('Active SSH session'))
-        with self.assertRaises(ControlBlocked):api.execute({'action':'wifi','enabled':False})
+        with self.assertRaises(ControlBlocked):api.execute({'action':'service','service':'ssh','operation':'restart'})
         self.assertIsNone(api.pending);self.assertEqual(d.foreground_app_id,'whisplay-ai-chatbot')
 
     def test_nonprivileged_commands_never_launch_root_capability_probe(self):
@@ -201,7 +206,7 @@ class PrivilegedContracts(unittest.TestCase):
         def info(path):
             return SimpleNamespace(st_mode=0o100755 if str(path).endswith('control-action') else 0o40755,st_uid=0)
         with patch('control_api.Path.lstat',info),patch('control_api.os.access',return_value=True),patch('control_api.subprocess.run') as run:
-            for value,expected in [({'api':2,'ssh_guard':True,'wifi_checkpoint_seconds':120},True),({'api':1},False),([],False)]:
+            for value,expected in [({'api':3,'ssh_guard':True,'wifi_checkpoint_seconds':120,'disruptive_wifi':False},True),({'api':1},False),([],False)]:
                 run.return_value=SimpleNamespace(returncode=0,stdout=json.dumps(value))
                 self.assertEqual(real_available(),expected)
             run.return_value=SimpleNamespace(returncode=0,stdout='Accepted')
@@ -210,8 +215,8 @@ class PrivilegedContracts(unittest.TestCase):
             self.assertFalse(real_available());run.assert_not_called()
 
     def test_real_button_dispatch_ignores_held_ptt_and_duplicate_release_before_new_gestures(self):
-        api,d=test_voice_control.VoiceControlTests().supported_api();wifi=d.internal_apps.wifi;wifi.change=Mock()
-        result=api.execute({'action':'wifi','enabled':False})
+        api,d=test_voice_control.VoiceControlTests().supported_api();wifi=d.internal_apps.bluetooth;wifi.change=Mock()
+        result=api.execute({'action':'bluetooth','enabled':False})
         with patch('whisplay_daemon.process_group_members',return_value={}):api.handle('control.present',{'ticket':result['ticket']},None)
         d.apps['whisplay-ai-chatbot'].process=None;d.foreground_app_id=None;d._app_exits.clear()
         d._button_press_started_at=100  # A PTT gesture begun in the old app.
@@ -222,7 +227,7 @@ class PrivilegedContracts(unittest.TestCase):
             with patch('whisplay_daemon.time.time',return_value=start):d._on_button_pressed()
             with patch('whisplay_daemon.time.time',return_value=end):d._on_button_released()
         gesture(200,200.1);self.assertEqual(wifi.confirmation.selected,1);wifi.change.assert_not_called()
-        gesture(201,202.2);wifi.change.assert_called_once_with('wifi-radio','off')
+        gesture(201,202.2);wifi.change.assert_called_once_with('power',enabled=False)
 
 
 @unittest.skipUnless(sys.platform == "linux", "Root-owned Linux installation contracts")
@@ -246,7 +251,7 @@ class InstallerContracts(unittest.TestCase):
     def test_install_policy_is_only_fixed_helper_and_no_service_or_driver_change(self):
         with self.sandbox() as (target,rule,run,trusted):
             installer.install('hamad')
-            self.assertEqual(rule.read_text(),'hamad ALL=(root) NOPASSWD: /usr/lib/whisplay/control-action\n')
+            self.assertEqual(rule.read_text(),'hamad ALL=(root) NOPASSWD: NOSETENV: /usr/lib/whisplay/control-action\n')
             self.assertEqual(target.read_bytes(),installer.SOURCE.read_bytes())
             self.assertEqual(stat.S_IMODE(target.stat().st_mode),0o755)
             self.assertEqual(stat.S_IMODE(rule.stat().st_mode),0o440)

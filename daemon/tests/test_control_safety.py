@@ -132,6 +132,7 @@ class ControlSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'not confirmed'):
                 control_action.dispatch(['wifi-radio', 'on'], Mock())
 
+    @patch.object(control_action, "DISRUPTIVE_WIFI_ENABLED", True)  # Dormant algorithm only.
     def test_new_wifi_credentials_never_appear_in_process_arguments(self):
         with tempfile.TemporaryDirectory() as directory:
             real_temporary_directory = tempfile.TemporaryDirectory
