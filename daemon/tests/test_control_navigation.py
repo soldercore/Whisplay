@@ -46,6 +46,7 @@ class NavigationTests(unittest.TestCase):
         d._recent_release_times = []
         d._foreground_long_press_fired = False
         d._keyboard_hold_cancel_fired = False
+        d.radio_status = SimpleNamespace(snapshot=lambda: {'wifi': {}, 'bluetooth': {}})
         d.joy_mode = False
         d.last_frame = None
         d.event_broadcaster = SimpleNamespace(broadcast=Mock())

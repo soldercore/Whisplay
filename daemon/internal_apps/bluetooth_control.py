@@ -4,6 +4,7 @@ import time
 from .menu import MenuApp
 from .bluetooth_app import BluetoothInternalApp, BluetoothViewState, BluetoothDevice
 from bluetooth_pairing_agent import BluetoothPairingAgent
+from .control_client import control
 
 
 class BluetoothControl(MenuApp, BluetoothInternalApp):
@@ -71,6 +72,15 @@ class BluetoothControl(MenuApp, BluetoothInternalApp):
 
     def apply_change(self, action, address=None, enabled=None, include_devices=True):
         def work():
+            if action in ('power', 'disconnect', 'remove'):
+                self.refresh(budget_seconds=8)
+                desired = not self.powered if enabled is None else enabled
+                disruptive = action != 'power' or desired is False
+                affected = [n for n in self.state.devices if action == 'power' or n.address == address]
+                if disruptive and (not self.details_complete or any(n.connected for n in affected)):
+                    # Recheck at execution too: button controls cannot bypass the
+                    # voice preflight, nor can forgetting a PAN pairing drop SSH.
+                    control(self._run_command, 'check-ssh')
             if action == 'power':
                 desired = not self.powered if enabled is None else enabled
                 self.checked('power', 'on' if desired else 'off')
@@ -87,6 +97,14 @@ class BluetoothControl(MenuApp, BluetoothInternalApp):
                 finally:
                     self.pairing_address = None
             self.refresh(include_devices=include_devices, budget_seconds=8 if not self.active else None)
+            if action == 'power' and self.powered is not desired:
+                raise RuntimeError('Bluetooth radio state was not confirmed')
+            if action in ('connect', 'disconnect', 'remove', 'pair'):
+                device = next((n for n in self.state.devices if n.address == address), None)
+                if (action in ('connect', 'pair') and (not device or not device.connected)
+                        or action == 'disconnect' and (not self.details_complete or not device or device.connected)
+                        or action == 'remove' and (not self.details_complete or device is not None)):
+                    raise RuntimeError('Bluetooth device change was not confirmed')
             self.note('Bluetooth action complete; status refreshed')
         return work()
 

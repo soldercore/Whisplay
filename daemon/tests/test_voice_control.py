@@ -153,6 +153,10 @@ class VoiceControlTests(unittest.TestCase):
     def supported_api(self):
         api, d = self.setup_api()
         api.capabilities = lambda **kwargs: {'actions': {a: {'supported': True} for a in __import__('control_api').ACTIONS}}
+        d.internal_apps.wifi.indicator_status = Mock(return_value={'enabled': False})
+        d.internal_apps.bluetooth.refresh = Mock()
+        d.internal_apps.bluetooth.powered = True
+        d.internal_apps.bluetooth.details_complete = False  # Unknown peers require confirmation/SSH guard.
         return api, d
 
     def finish_handoff(self, api, d, result):

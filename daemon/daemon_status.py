@@ -37,7 +37,7 @@ class StatusPoller:
         return None
 
     def refresh(self) -> bool:
-        wifi_signal_level = self.probe_wifi_signal_level()
+        wifi_signal_level = None  # NetworkManager/BlueZ event observer owns wireless state.
         battery_level = self.pisugar.probe_battery_level()
         changed = (
             wifi_signal_level != self.wifi_signal_level

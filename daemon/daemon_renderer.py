@@ -184,11 +184,12 @@ class DesktopRenderer:
         draw: ImageDraw.ImageDraw,
         wifi_signal_level: int | None,
         battery_level: int | None,
+        wireless_status=None,
     ):
         items: list[tuple[str, object]] = []
         if isinstance(battery_level, int):
             items.append(("battery", max(0, min(100, battery_level))))
-        if isinstance(wifi_signal_level, int) and wifi_signal_level in WIFI_LEVEL_ICON_FILES:
+        if wireless_status is None and isinstance(wifi_signal_level, int) and wifi_signal_level in WIFI_LEVEL_ICON_FILES:
             icon = self._load_status_icon(
                 WIFI_LEVEL_ICON_FILES[wifi_signal_level],
                 STATUS_ICON_HEIGHT,
@@ -196,7 +197,7 @@ class DesktopRenderer:
             )
             if icon is not None:
                 items.append(("wifi", icon))
-        if not items:
+        if not items and wireless_status is None:
             return
 
         right_margin = 10
@@ -212,6 +213,9 @@ class DesktopRenderer:
                 icon_x = cursor_x - width
                 image.paste(payload, (icon_x, 7), payload)
             cursor_x = icon_x - icon_gap
+        if wireless_status is not None:
+            from wireless_icons import draw_wireless
+            draw_wireless(draw, cursor_x, 15, wireless_status)
 
     def _draw_legend_pill(
         self,
@@ -366,10 +370,11 @@ class DesktopRenderer:
         running_app_id: str | None = None,
         wifi_signal_level: int | None = None,
         battery_level: int | None = None,
+        wireless_status=None,
     ):
         image = Image.new("RGB", (SCREEN_WIDTH, SCREEN_HEIGHT), (7, 11, 18))
         draw = ImageDraw.Draw(image)
-        self._draw_status_icons(image, draw, wifi_signal_level, battery_level)
+        self._draw_status_icons(image, draw, wifi_signal_level, battery_level, wireless_status)
 
         top_margin = 6
         left = 14

@@ -247,6 +247,7 @@ class DaemonIntegrationTests(unittest.TestCase):
         daemon._recent_release_times = []
         daemon.last_frame = None
         daemon.status_poller = SimpleNamespace(wifi_signal_level=3, battery_level=80)
+        daemon.radio_status = SimpleNamespace(snapshot=lambda: {'wifi': {'enabled': True, 'connected': True, 'signal': 80}, 'bluetooth': {'enabled': False}})
         daemon.internal_apps = SimpleNamespace(is_internal_app=lambda _app_id: False)
         return daemon
 

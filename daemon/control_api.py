@@ -83,7 +83,8 @@ class ControlAPI:
                     'wifi': {**privileged(nm), 'immediate_enable': True, 'disable_supported': False},
                     'wifi_scan': feature(nm, reason='NetworkManager unavailable'),
                     'wifi_profile': feature(False, reason=WIFI_DISABLED), 'wifi_join': feature(False, reason=WIFI_DISABLED),
-                    'bluetooth': {**feature(bt and self.confirmations, True, 'BlueZ / confirmation unavailable'), 'immediate_enable': True},
+                    'bluetooth': {**feature(bt and self.confirmations, True, 'BlueZ / confirmation unavailable'),
+                                  'immediate_enable': True, 'immediate_disable_when_idle': True},
                     'bluetooth_scan': feature(bt, reason='BlueZ controller unavailable'),
                     'bluetooth_device': feature(bt and self.confirmations, True, 'BlueZ / confirmation unavailable'),
                     'service': {**privileged(bool(shutil.which('systemctl'))), 'immediate_start': True}, 'reboot': privileged(), 'shutdown': privileged()},
@@ -94,9 +95,9 @@ class ControlAPI:
                           'Services report systemd/process state, not remote connectivity or backend readiness.',
                           'CPU/RAM/temperature/storage are supplied by the existing getSystemHealth tool.',
                           'Wi-Fi passwords are entered only on the local Network screen, never through voice tools.',
-                          'Bluetooth device actions require a uniquely discovered device and local confirmation.',
+                          'Bluetooth targets must be uniquely discovered; paired reconnection is immediate, pairing retains local authorization.',
                           'Active SSH sessions block disruptive Wi-Fi operations and SSH restart; service start is immediate.',
-                          'Wi-Fi enable and scan are available; disable, join, switch and disconnect are blocked until recovery is verified.',
+                          'Wi-Fi enable and scan depend on authorization; disable, join, switch and disconnect stay blocked until recovery is verified.',
                           'Radio authorization is checked by the existing operations; no hardware power-on is promised.']}
 
     def read(self, scope):
@@ -185,6 +186,10 @@ class ControlAPI:
             raise ValueError('Unexpected or missing action parameters')
         if action == 'wifi' and not p['enabled']:
             raise RuntimeError(WIFI_DISABLED)
+        m = self.daemon.internal_apps
+        if action == 'wifi' and p['enabled'] and m.wifi.indicator_status()['enabled'] is True:
+            p['already_enabled'] = True  # Verified read-only no-op needs no privilege grant.
+            return p
         feature = self.capabilities(privileged=action in PRIVILEGED_ACTIONS)['actions'][action]
         if not feature['supported']:
             raise RuntimeError(feature.get('reason') or 'Action unavailable')
@@ -220,6 +225,9 @@ class ControlAPI:
     def execute(self, payload):
         p = self.normalize(payload)
         d, m, action = self.daemon, self.daemon.internal_apps, p['action']
+        if action == 'wifi' and p.get('already_enabled'):
+            return {'status': 'completed', 'action': action, 'enabled': True, 'changed': False,
+                    'verification': 'NetworkManager_radio_readback'}
         if action == 'service' and p['operation'] == 'start':
             if m.services.state.busy:
                 raise RuntimeError('Service operation already in progress')
@@ -242,7 +250,35 @@ class ControlAPI:
                 raise RuntimeError('Bluetooth operation already in progress')
             m.bluetooth.apply_change('scan')
             return {'status': 'completed', 'action': action, 'devices': [asdict(n) for n in m.bluetooth.state.devices]}
-        if action in ('wifi', 'bluetooth') and p['enabled']:
+        if action == 'bluetooth':
+            target = m.bluetooth
+            if target.state.busy:
+                raise RuntimeError('Bluetooth operation already in progress')
+            target.refresh(budget_seconds=8)
+            if target.powered is p['enabled']:
+                return {'status': 'completed', 'action': action, 'enabled': target.powered,
+                        'changed': False, 'verification': 'radio_readback'}
+            if not p['enabled'] and (not getattr(target, 'details_complete', False)
+                                    or any(n.connected for n in target.state.devices)):
+                self.check_ssh()  # A connected Bluetooth PAN may carry SSH. Missing guard fails closed.
+            else:
+                target.apply_change('power', enabled=p['enabled'], include_devices=False)
+                if target.powered is not p['enabled']:
+                    raise RuntimeError('Bluetooth radio change not confirmed by actual status')
+                return {'status': 'completed', 'action': action, 'enabled': target.powered,
+                        'verification': 'radio_readback'}
+        if action == 'bluetooth_device' and p['operation'] == 'connect':
+            device = next(n for n in m.bluetooth.state.devices if n.address == p['address'])
+            if device.paired:
+                m.bluetooth.apply_change('connect', p['address'])
+                if not any(n.address == p['address'] and n.connected for n in m.bluetooth.state.devices):
+                    raise RuntimeError('Bluetooth connection not confirmed by actual status')
+                return {'status': 'completed', 'action': action, 'operation': 'connect',
+                        'device': p['device'], 'verification': 'BlueZ_readback'}
+        if action == 'bluetooth_device' and p['operation'] in ('disconnect', 'forget'):
+            # Neither a different operation name nor removal of a pairing bypasses SSH protection.
+            self.check_ssh()
+        if action == 'wifi' and p['enabled']:
             target = getattr(m, action)
             if target.state.busy:
                 raise RuntimeError('Radio operation already in progress')

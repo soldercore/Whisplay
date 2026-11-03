@@ -60,6 +60,7 @@ from daemon_shared import (
 )
 from internal_apps import ExternalKeyboardReader, InternalAppManager
 from daemon_status import StatusPoller
+from radio_status import RadioStatus
 from whisplay import WhisplayBoard
 
 
@@ -108,6 +109,7 @@ class WhisplayDaemon:
             set_brightness=self._set_user_brightness, battery=lambda: self.status_poller.battery_level,
             launch_glados=self._launch_glados_from_services, begin_maintenance=self._begin_maintenance,
             end_maintenance=self._end_maintenance)
+        self.radio_status = RadioStatus(self.internal_apps.wifi, self.internal_apps.bluetooth)
         self.keyboard_reader = ExternalKeyboardReader()
         self.pisugar_home_button = self._normalize_pisugar_home_button(pisugar_home_button)
         self.autostart_app_id = str(autostart_app_id or "").strip()
@@ -440,6 +442,7 @@ class WhisplayDaemon:
             None,  # Row RUN markers suffice; a stopping app must never obscure Home.
             self.status_poller.wifi_signal_level,
             self.status_poller.battery_level,
+            wireless_status=self.radio_status.snapshot(),
         )
 
     def _render_internal_app(self):
@@ -641,10 +644,15 @@ class WhisplayDaemon:
 
     def _refresh_status_icons(self, force: bool = False):
         now = time.time()
-        if not force and now - self._last_status_poll_at < STATUS_POLL_INTERVAL_SEC:
+        radio_changed = self.radio_status.updated.is_set()
+        if not force and not radio_changed and now - self._last_status_poll_at < STATUS_POLL_INTERVAL_SEC:
             return
         self._last_status_poll_at = now
         changed = self.status_poller.refresh()
+        if radio_changed:
+            self.radio_status.updated.clear()
+            self.event_broadcaster.broadcast("device_status", self.radio_status.snapshot(), app_id="whisplay-ai-chatbot")
+            changed = True
         if changed and not self.foreground_app_id and not self._screen_locked:
             self._render_desktop()
 
@@ -1293,7 +1301,7 @@ class WhisplayDaemon:
             if cmd == "events.subscribe":
                 app_id = str(payload.get("app_id", "")).strip() or None
                 self.event_broadcaster.add(conn, app_id)
-                return {"ok": True, "payload": {"subscribed": True, "app_id": app_id}}, True
+                return {"ok": True, "payload": {"subscribed": True, "app_id": app_id, "wireless_status": self.radio_status.snapshot()}}, True
 
         return {"ok": False, "error": f"unknown command: {cmd}"}, False
 
@@ -1348,6 +1356,7 @@ class WhisplayDaemon:
         self.server_socket.listen(8)
         self._set_rgb(0, 0, 0)
         self.board.set_backlight(100)
+        self.radio_status.start()
         self._refresh_status_icons(force=True)
         self._render_desktop()
         self._init_pisugar_integration()
@@ -1373,6 +1382,7 @@ class WhisplayDaemon:
         except Exception:
             pass
         self.event_broadcaster.broadcast("daemon_stopping")
+        self.radio_status.stop()
         self.internal_apps.stop()
         self.keyboard_reader.stop()
         self.pisugar.close()

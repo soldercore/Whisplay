@@ -10,6 +10,7 @@ stale clock would be misleading.
 from PIL import Image, ImageDraw
 
 from . import theme
+from wireless_icons import draw_wireless
 from .draw_util import draw_text, fit_text
 
 CENTER_Y = theme.STATUS_CENTER_Y
@@ -28,7 +29,7 @@ class StatusBar:
     def __init__(self, fonts):
         self.fonts = fonts
 
-    def render(self, label, color, battery_level=None, wifi_level=None, clock=None):
+    def render(self, label, color, battery_level=None, wifi_level=None, clock=None, wireless_status=None):
         image = Image.new("RGB", (theme.WIDTH, theme.STATUS_H), theme.VOID)
         draw = ImageDraw.Draw(image)
         fonts = self.fonts
@@ -47,7 +48,9 @@ class StatusBar:
         right = theme.STATUS_SAFE_RIGHT
         if isinstance(battery_level, int) and not isinstance(battery_level, bool):
             right = self._battery(draw, image, right, battery_level)
-        if wifi_level:
+        if wireless_status is not None:
+            right = draw_wireless(draw, right - GAP, CENTER_Y, wireless_status, theme)
+        elif wifi_level:
             right = self._wifi(draw, right - GAP, wifi_level)
 
         if clock:

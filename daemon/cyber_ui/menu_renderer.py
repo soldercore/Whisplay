@@ -65,6 +65,7 @@ class CyberDesktopRenderer:
         # last values the desktop received so the status bar stays consistent.
         self._wifi_signal_level = None
         self._battery_level = None
+        self._wireless_status = None
         print(f"[WhisplayDaemon] Cyber menu UI fonts: {self.fonts.loaded}")
 
     # ------------------------------------------------------------ helpers
@@ -76,7 +77,7 @@ class CyberDesktopRenderer:
         self.board.draw_image(0, 0, theme.WIDTH, theme.HEIGHT, image_to_rgb565_bytes(image))
 
     def _status(self, image, label, color):
-        bar = self.statusbar.render(label, color, self._battery_level, self._wifi_signal_level)
+        bar = self.statusbar.render(label, color, self._battery_level, self._wifi_signal_level, wireless_status=self._wireless_status)
         image.paste(bar, (0, 0))
 
     def _chips(self, draw, image, chips, y_mid, top_line=True):
@@ -132,9 +133,11 @@ class CyberDesktopRenderer:
         running_app_id: str | None = None,
         wifi_signal_level: int | None = None,
         battery_level: int | None = None,
+        wireless_status=None,
     ):
         self._wifi_signal_level = wifi_signal_level
         self._battery_level = battery_level
+        self._wireless_status = wireless_status
         image, draw = self._frame()
         apps = list(apps or [])
         total = len(apps)

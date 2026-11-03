@@ -38,6 +38,18 @@ class WifiControl(MenuApp, WifiInternalApp):
             raise RuntimeError('NetworkManager unavailable')
         return result.stdout
 
+    def indicator_status(self):
+        radio = self._read(['-t', '-f', 'WIFI', 'radio'], 2).strip()
+        enabled = True if radio == 'enabled' else False if radio == 'disabled' else None
+        if enabled is not True:
+            return {'enabled': enabled, 'connected': False if enabled is False else None, 'signal': None}
+        data = self._read(['-t', '--escape', 'yes', '-f', 'IN-USE,SIGNAL',
+                           'device', 'wifi', 'list', '--rescan', 'no'], 2)
+        active = [self._split_escaped_fields(line, 2, ':') for line in data.splitlines()]
+        active = [fields for fields in active if len(fields) == 2 and fields[0] == '*']
+        signal = max((int(fields[1]) for fields in active if fields[1].isdigit() and 0 <= int(fields[1]) <= 100), default=None)
+        return {'enabled': enabled, 'connected': bool(active), 'signal': signal}
+
     def refresh(self):
         radio = self._read(['-t', '-f', 'WIFI', 'radio']).strip()
         radio = True if radio == 'enabled' else False if radio == 'disabled' else None
