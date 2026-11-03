@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cyber_ui import preview, theme
 from cyber_ui.menu_renderer import CyberDesktopRenderer, DESKTOP_ROWS
 from cyber_ui.draw_util import draw_text
-from wireless_icons import draw_wireless
+from cyber_ui.home_icons import draw_home_wireless
 import test_cyber_menu
 
 STATE = {'wifi':{'enabled':True,'connected':True,'signal':76}, 'bluetooth':{'enabled':False}}
@@ -72,12 +72,12 @@ class HomePolishTests(unittest.TestCase):
         from cyber_ui.statusbar import draw_text as header_text
         for battery,expected in [(0,'0%'),(9,'9%'),(76,'76%'),(100,'100%'),(None,'--%'),(-1,'--%'),(True,'--%')]:
             with patch('cyber_ui.statusbar.draw_text',wraps=header_text) as text, \
-                 patch('cyber_ui.statusbar.draw_wireless',wraps=draw_wireless) as radios, \
+                 patch('cyber_ui.statusbar.draw_home_wireless',wraps=draw_home_wireless) as radios, \
                  patch.object(renderer.statusbar,'_battery',side_effect=AssertionError('Home must not draw a battery outline')):
                 renderer.statusbar.render_home(battery,STATE,clock='19:38')
             strings=[c.args[5] for c in text.call_args_list]
             self.assertIn(expected,strings);self.assertIn('19:38',strings)
-            self.assertEqual(radios.call_args.args[1],int(theme.STATUS_SAFE_RIGHT-renderer.fonts.pixel8.width('100%')-6))
+            self.assertEqual(radios.call_args.args[1],int(theme.STATUS_SAFE_RIGHT-renderer.fonts.meta_bold.width('100%')-6))
 
     def test_wireless_states_are_distinct_and_header_geometry_is_constant(self):
         renderer,_ = self.renderer()

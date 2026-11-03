@@ -12,6 +12,7 @@ from PIL import Image, ImageDraw
 from . import theme
 from wireless_icons import draw_wireless
 from .draw_util import draw_text, fit_text
+from .home_icons import draw_home_wireless
 
 CENTER_Y = theme.STATUS_CENTER_Y
 GAP = 6
@@ -39,9 +40,9 @@ class StatusBar:
         draw.line((24, theme.DIVIDER_Y, int(left), theme.DIVIDER_Y), fill=theme.GREEN_MID)
         valid = type(battery_level) is int and 0 <= battery_level <= 100
         text = "%d%%" % battery_level if valid else "--%"
-        right = int(theme.STATUS_SAFE_RIGHT-self.fonts.pixel8.width(text))
+        right = int(theme.STATUS_SAFE_RIGHT-self.fonts.meta_bold.width(text))
         color = battery_color(battery_level) if valid and battery_level <= 30 else theme.TEXT if valid else theme.MUTED
-        draw_text(draw, image, self.fonts.pixel8, right, CENTER_Y, text, color)
+        draw_text(draw, image, self.fonts.meta_bold, right, CENTER_Y, text, color)
         state = wireless_status
         if state is None:
             # A legacy signal sample proves a connection only when nonzero;
@@ -49,8 +50,8 @@ class StatusBar:
             state = {'wifi': {'enabled': True if wifi_level else None,
                      'connected': True if wifi_level else None,
                      'signal': {1: 20, 2: 50, 3: 90}.get(wifi_level)}, 'bluetooth': {}}
-        radio_right = int(theme.STATUS_SAFE_RIGHT-self.fonts.pixel8.width("100%")-GAP)
-        right = draw_wireless(draw, radio_right, CENTER_Y, state, theme)
+        radio_right = int(theme.STATUS_SAFE_RIGHT-self.fonts.meta_bold.width("100%")-GAP)
+        right = draw_home_wireless(image, radio_right, CENTER_Y, state)
         if clock:
             width = self.fonts.meta_bold.width(clock)
             x = max(int((theme.WIDTH-width)/2), int(left+GAP))

@@ -20,6 +20,7 @@ from . import theme
 from .draw_util import corner_brackets, dotted, draw_text, fit_text
 from .fonts import Fonts
 from .statusbar import StatusBar
+from .home_icons import application_icon
 
 # Base font for glyphs the bundled fonts lack (CJK app names, symbols).
 # CJK-capable fonts first; DejaVu is what the classic launcher uses.
@@ -157,11 +158,14 @@ class CyberDesktopRenderer:
                                        fill=theme.RAISED, outline=theme.GREEN_MID)
                 draw_text(draw, image, fonts.pixel8, 21, mid, ">", theme.GREEN)
             else:
-                draw.line((34, y+HOME_ROW_H-1, 218, y+HOME_ROW_H-1), fill=theme.LINE)
+                draw.line((60, y+HOME_ROW_H-1, 218, y+HOME_ROW_H-1), fill=theme.LINE)
+            icon = application_icon(app.app_id, selected)
+            image.paste(icon, (31, mid-8), icon)
+            draw.line((52, mid-6, 52, mid+6), fill=theme.LINE)
             marker = "OPEN" if pending_app_id == app.app_id else "RUN" if app.is_running() else ""
             marker_width = fonts.pixel8.width(marker) + 10 if marker else 0
-            name = fit_text(fonts.body, app_display_name(app), 180-marker_width)
-            draw_text(draw, image, fonts.body, 34, mid, name, theme.BRIGHT if selected else theme.TEXT)
+            name = fit_text(fonts.body, app_display_name(app), 154-marker_width)
+            draw_text(draw, image, fonts.body, 60, mid, name, theme.BRIGHT if selected else theme.TEXT)
             if marker:
                 draw_text(draw, image, fonts.pixel8, int(213-fonts.pixel8.width(marker)), mid,
                           marker, theme.GREEN if marker == "RUN" else theme.CYAN)
